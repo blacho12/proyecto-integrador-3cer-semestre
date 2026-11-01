@@ -1,0 +1,36 @@
+=== PRUEBA 1: Cola de prioridad ===
+Desencolar con cola vacia -> null
+Tamano: 5 | Primera: OM-3 [ALTA, equipo EQ-002, CORRECTIVO, PENDIENTE]
+Orden de atencion:
+  OM-3 [ALTA, equipo EQ-002, CORRECTIVO, PENDIENTE]
+  OM-4 [ALTA, equipo EQ-005, CORRECTIVO, PENDIENTE]
+  OM-1 [MEDIA, equipo EQ-003, CORRECTIVO, PENDIENTE]
+  OM-5 [MEDIA, equipo EQ-004, PREVENTIVO, PENDIENTE]
+  OM-2 [BAJA, equipo EQ-001, PREVENTIVO, PENDIENTE]
+Eliminar orden inexistente (99) -> false
+Cancelar OM-3 -> true | Nueva primera: OM-4 [ALTA, equipo EQ-005, CORRECTIVO, PENDIENTE]
+Cola vaciada. Primera -> null
+
+=== PRUEBA 2: Arbol AVL de equipos ===
+Buscar con arbol vacio -> null
+Insertados 7 codigos consecutivos. Tamano: 7 | Altura: 3 (un arbol sin balancear tendria altura 7)
+Insertar codigo duplicado EQ-004 -> false
+Buscar EQ-005 -> EQ-005 - Equipo 5 (Area 3)
+Buscar EQ-999 (inexistente) -> null
+Modificar EQ-005 -> true | EQ-005 - Compresor nuevo (Area 9)
+Eliminar EQ-004 (raiz, dos hijos) -> true
+Eliminar EQ-999 (inexistente) -> false
+Inorden: EQ-001 EQ-002 EQ-003 EQ-005 EQ-006 EQ-007 | Altura: 3
+
+=== PRUEBA 3: Pila de acciones ===
+Desapilar con pila vacia -> null
+Un solo elemento. Tope: CREAR | Tamano: 1
+Desapilando (LIFO): CERRAR CANCELAR CREAR 
+
+=== PRUEBA 4: Gestor integrado y deshacer ===
+Deshacer sin historial -> null
+Crear orden con equipo inexistente -> null
+Creadas: OM-1 [BAJA, equipo EQ-002, PREVENTIVO, PENDIENTE] y OM-2 [ALTA, equipo EQ-001, CORRECTIVO, PENDIENTE] | Primera: OM-2 [ALTA, equipo EQ-001, CORRECTIVO, PENDIENTE]
+Cancelada OM-2 [ALTA, equipo EQ-001, CORRECTIVO, PENDIENTE] -> Primera: OM-1 [BAJA, equipo EQ-002, PREVENTIVO, PENDIENTE]
+Deshacer cancelacion -> Primera: OM-2 [ALTA, equipo EQ-001, CORRECTIVO, PENDIENTE]
+Deshacer creacion de OM-2 -> Primera: OM-1 [BAJA, equipo EQ-002, PREVENTIVO, PENDIENTE] | Tamano cola: 1

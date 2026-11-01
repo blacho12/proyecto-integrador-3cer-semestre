@@ -1,0 +1,9 @@
+Codigo fuente - Primeras operaciones (Grupo 7, PIA 2026-2)
+Paquetes: modelo, estructuras, app (src/)
+
+Compilar y ejecutar las pruebas (JDK 17 o superior):
+  mkdir out
+  javac -encoding UTF-8 -d out $(find src -name "*.java")
+  java -cp out app.PruebaEstructuras
+
+salida_pruebas.txt contiene la salida obtenida al ejecutar las pruebas.
