@@ -26,4 +26,18 @@ public class PilaAcciones {
 
     /** Consulta la ultima accion sin retirarla. O(1). */
     public Accion verTope() { return tope == null ? null : tope.accion; }
+
+    /**
+     * Copia las acciones del tope hacia la base (orden LIFO) sin modificar la pila.
+     * La usa la vista de historial para mostrar el contenido real. O(n).
+     */
+    public Accion[] acciones() {
+        Accion[] salida = new Accion[tamano];
+        NodoPila actual = tope;
+        for (int i = 0; i < salida.length; i++) {
+            salida[i] = actual.accion;
+            actual = actual.siguiente;
+        }
+        return salida;
+    }
 }

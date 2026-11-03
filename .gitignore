@@ -1,4 +1,12 @@
+# Variables de entorno
 .env
-.vscode
-target
-pom.xml
+.env.*
+
+# Archivos generados por Maven
+target/
+
+# Configuración personal de VS Code
+.vscode/
+
+# Archivos temporales de Java
+*.class

@@ -11,6 +11,9 @@ public class ArbolAVL {
     public int tamano() { return tamano; }
     public int altura() { return altura(raiz); }
 
+    /** Raiz del arbol (solo lectura). La usa la vista para dibujar la estructura real. */
+    public NodoAVL getRaiz() { return raiz; }
+
     /** Inserta un equipo. Devuelve false si el codigo ya existe. */
     public boolean insertar(Equipo e) {
         if (e == null) throw new IllegalArgumentException("El equipo no puede ser nulo");
