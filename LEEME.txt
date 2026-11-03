@@ -1,9 +1,34 @@
-Codigo fuente - Primeras operaciones (Grupo 7, PIA 2026-2)
-Paquetes: modelo, estructuras, app (src/)
+Sistema de Gestión de Mantenimiento Industrial (Grupo 7, PIA 2026-2)
+Paquetes: modelo, estructuras, datos, app y ui.
 
-Compilar y ejecutar las pruebas (JDK 17 o superior):
-  mkdir out
-  javac -encoding UTF-8 -d out $(find src -name "*.java")
-  java -cp out app.PruebaEstructuras
+Requisitos
+  - JDK 25 (el pom.xml usa maven.compiler.release=25)
+  - Maven 3.9+
+  - PostgreSQL con el esquema de src/main/resources/esquema.sql aplicado
+  - Variables de entorno DB_URL, DB_USER y DB_PASSWORD
+    (en VS Code se cargan desde el archivo .env mediante envFile)
 
-salida_pruebas.txt contiene la salida obtenida al ejecutar las pruebas.
+Compilar y ejecutar las pruebas
+  mvn clean test
+  mvn clean package
+
+Ejecutar la interfaz gráfica (Swing + FlatLaf)
+  Desde VS Code:
+    1. Abrir la vista "Run and Debug".
+    2. Elegir la configuración "Interfaz Swing (SGMI)".
+    3. Iniciar la ejecución.
+
+  Desde una terminal (Windows / Git Bash), después de mvn clean package:
+    mvn -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt
+    java -cp "target/classes;$(cat target/cp.txt)" ui.MenuPrincipal
+
+  También se conserva el menú de consola en app.MenuPrincipal.
+
+Pruebas de integración existentes (requieren PostgreSQL)
+  java -cp "target/classes;$(cat target/cp.txt)" app.PruebaIntegracion
+  java -cp "target/classes;$(cat target/cp.txt)" app.PruebaEstructuras
+
+Notas
+  - La interfaz nunca ejecuta SQL directamente: usa GestorOrdenes y los DAO.
+  - La pila de acciones es temporal y vive solo en memoria durante la sesión.
+  - FlatLaf 3.5.4 se descarga automáticamente mediante Maven.
