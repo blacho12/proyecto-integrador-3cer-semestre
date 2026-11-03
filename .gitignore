@@ -1,0 +1,12 @@
+# Variables de entorno
+.env
+.env.*
+
+# Archivos generados por Maven
+target/
+
+# Configuración personal de VS Code
+.vscode/
+
+# Archivos temporales de Java
+*.class
