@@ -9,4 +9,9 @@ public class NodoAVL {
     int altura = 1;
 
     NodoAVL(Equipo equipo) { this.equipo = equipo; }
+
+    public Equipo getEquipo() { return equipo; }
+    public NodoAVL getIzquierdo() { return izquierdo; }
+    public NodoAVL getDerecho() { return derecho; }
+    public int getAltura() { return altura; }
 }

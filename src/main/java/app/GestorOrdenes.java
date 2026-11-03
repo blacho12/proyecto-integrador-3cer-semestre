@@ -36,6 +36,9 @@ public class GestorOrdenes {
     private final EquipoDAO equipoDAO;
     private final OrdenDAO ordenDAO;
 
+    /** Ultimo mensaje de error comprensible; la interfaz lo muestra al usuario. */
+    private volatile String ultimoError;
+
     /** Abre la conexion con PostgreSQL (variables DB_URL, DB_USER y DB_PASSWORD). */
     public GestorOrdenes() throws SQLException {
         this(ConexionBD.getConnection());
@@ -57,6 +60,19 @@ public class GestorOrdenes {
     public EquipoDAO getEquipoDAO() { return equipoDAO; }
     public OrdenDAO getOrdenDAO() { return ordenDAO; }
     public Connection getConexionBD() { return conexion; }
+
+    /** Ultimo error de negocio o de PostgreSQL, o null si la ultima operacion fue exitosa. */
+    public String getUltimoError() { return ultimoError; }
+
+    /** Comprueba realmente si la conexion JDBC sigue abierta y responde. */
+    public boolean conexionActiva() {
+        try {
+            return !conexion.isClosed() && conexion.isValid(2);
+        } catch (SQLException e) {
+            registrarError(e);
+            return false;
+        }
+    }
 
     /** Cierra la conexion subyacente. */
     public void cerrar() {
@@ -104,7 +120,10 @@ public class GestorOrdenes {
     /** Elimina un equipo de la BD y del AVL; la BD rechaza si tiene ordenes asociadas. */
     public boolean eliminarEquipo(String codigo) {
         Equipo e = equipos.buscar(codigo);
-        if (e == null) return false;
+        if (e == null) {
+            ultimoError = "El equipo '" + codigo + "' no existe en el indice AVL.";
+            return false;
+        }
         try {
             if (!equipoDAO.eliminar(codigo)) return false;
             equipos.eliminar(codigo);
@@ -125,18 +144,21 @@ public class GestorOrdenes {
     public OrdenMantenimiento crearOrden(String codigoEquipo, String tipo, String descripcion,
                                          int impacto, int riesgoSeguridad, boolean hayRespaldo) {
         if (equipos.buscar(codigoEquipo) == null) {
-            System.err.println("El equipo '" + codigoEquipo + "' no existe en el catalogo de equipos.");
+            ultimoError = "El equipo '" + codigoEquipo + "' no existe en el catalogo de equipos.";
+            System.err.println(ultimoError);
             return null;
         }
         try {
             if (equipoDAO.consultarPorCodigo(codigoEquipo) == null) {
-                System.err.println("El equipo '" + codigoEquipo + "' no existe en PostgreSQL.");
+                ultimoError = "El equipo '" + codigoEquipo + "' no existe en PostgreSQL.";
+                System.err.println(ultimoError);
                 return null;
             }
         } catch (SQLException e) { notificarErrorDeBD(e); return null; }
         try {
             validarDatosOrden(tipo, descripcion, impacto, riesgoSeguridad);
         } catch (IllegalArgumentException e) {
+            ultimoError = e.getMessage();
             System.err.println(e.getMessage());
             return null;
         }
@@ -166,12 +188,14 @@ public class GestorOrdenes {
                                   int impacto, int riesgoSeguridad, boolean hayRespaldo) {
         OrdenMantenimiento o = ordenes.buscarPorId(id);
         if (o == null || o.getEstado() != Estado.PENDIENTE) {
-            System.err.println("La orden " + id + " no existe o no esta pendiente.");
+            ultimoError = "La orden OM-" + id + " no existe o no esta pendiente.";
+            System.err.println(ultimoError);
             return false;
         }
         try {
             validarDatosOrden(tipo, descripcion, impacto, riesgoSeguridad);
         } catch (IllegalArgumentException e) {
+            ultimoError = e.getMessage();
             System.err.println(e.getMessage());
             return false;
         }
@@ -186,7 +210,8 @@ public class GestorOrdenes {
                 restaurarValores(o, previa);
                 ordenes.encolar(o);
                 conexion.rollback();
-                System.err.println("La orden " + id + " ya no existe en PostgreSQL.");
+                ultimoError = "La orden OM-" + id + " ya no existe en PostgreSQL.";
+                System.err.println(ultimoError);
                 return false;
             }
             ordenes.encolar(o);                     // reingreso con la nueva prioridad
@@ -207,13 +232,17 @@ public class GestorOrdenes {
     public boolean cancelarOrden(long id) {
         OrdenMantenimiento o = ordenes.buscarPorId(id);
         if (o == null || o.getEstado() != Estado.PENDIENTE) {
-            System.err.println("La orden " + id + " no existe o no esta pendiente.");
+            ultimoError = "La orden OM-" + id + " no existe o no esta pendiente.";
+            System.err.println(ultimoError);
             return false;
         }
         OrdenMantenimiento previa = o.copia();
         LocalDateTime cierre = LocalDateTime.now();
         try {
-            if (!ordenDAO.cambiarEstado(id, Estado.CANCELADA, cierre)) return false;
+            if (!ordenDAO.cambiarEstado(id, Estado.CANCELADA, cierre)) {
+                ultimoError = "La orden OM-" + id + " ya no esta pendiente en PostgreSQL.";
+                return false;
+            }
             ordenes.eliminarPorId(id);              // despues de que la BD confirmo el cambio
             o.setEstado(Estado.CANCELADA);
             o.setFechaCierre(cierre);
@@ -228,6 +257,37 @@ public class GestorOrdenes {
 
     // ------------------------------------------------------------------ cerrar orden
 
+    /**
+     * Cierra una orden PENDIENTE concreta. Primero confirma el cambio en PostgreSQL y solo
+     * despues la retira de la cola y apila la accion CERRAR para poder deshacerla.
+     * Devuelve false si no existe, no esta pendiente o falla la base de datos.
+     */
+    public boolean cerrarOrden(long id) {
+        OrdenMantenimiento o = ordenes.buscarPorId(id);
+        if (o == null || o.getEstado() != Estado.PENDIENTE) {
+            ultimoError = "La orden OM-" + id + " no existe o no esta pendiente.";
+            System.err.println(ultimoError);
+            return false;
+        }
+        OrdenMantenimiento previa = o.copia();
+        LocalDateTime cierre = LocalDateTime.now();
+        try {
+            if (!ordenDAO.cambiarEstado(id, Estado.CERRADA, cierre)) {
+                ultimoError = "La orden OM-" + id + " ya no esta pendiente en PostgreSQL.";
+                return false;
+            }
+            ordenes.eliminarPorId(id);
+            o.setEstado(Estado.CERRADA);
+            o.setFechaCierre(cierre);
+            historial.apilar(new Accion(Accion.Tipo.CERRAR, previa));
+            conexion.commit();
+            return true;
+        } catch (SQLException e) {
+            notificarErrorDeBD(e);
+            return false;
+        }
+    }
+
     /** Atiende (cierra) la orden mas prioritaria. Si la BD falla, permanece en la cola. */
     public OrdenMantenimiento atenderSiguiente() {
         OrdenMantenimiento o = ordenes.verPrimera();
@@ -236,7 +296,8 @@ public class GestorOrdenes {
         LocalDateTime cierre = LocalDateTime.now();
         try {
             if (!ordenDAO.cambiarEstado(o.getId(), Estado.CERRADA, cierre)) {
-                System.err.println("La orden " + o.getId() + " ya no esta pendiente en PostgreSQL.");
+                ultimoError = "La orden OM-" + o.getId() + " ya no esta pendiente en PostgreSQL.";
+                System.err.println(ultimoError);
                 return null;
             }
             ordenes.desencolar();
@@ -252,6 +313,11 @@ public class GestorOrdenes {
     }
 
     // ------------------------------------------------------------------ consultar en la BD
+
+    /** Historial completo de ordenes (PENDIENTE, CERRADA y CANCELADA) para las vistas. */
+    public List<OrdenMantenimiento> consultarTodasLasOrdenes() throws SQLException {
+        return ordenDAO.consultarTodas();
+    }
 
     public List<OrdenMantenimiento> consultarOrdenesPorEquipo(String codigoEquipo) throws SQLException {
         return ordenDAO.consultarPorEquipo(codigoEquipo);
@@ -283,7 +349,8 @@ public class GestorOrdenes {
                 case CREAR:
                     // Revertir una creacion = eliminar el registro y retirarlo de las estructuras.
                     if (!ordenDAO.eliminar(id)) {
-                        System.err.println("No se pudo revertir: la orden " + id + " ya no existe en PostgreSQL.");
+                        ultimoError = "No se pudo revertir: la orden OM-" + id + " ya no existe en PostgreSQL.";
+                        System.err.println(ultimoError);
                         return null;
                     }
                     ordenes.eliminarPorId(id);
@@ -293,7 +360,8 @@ public class GestorOrdenes {
                 case CERRAR:
                     // Restaurar PENDIENTE con fecha_cierre NULL en la BD y reinsertar en la cola.
                     if (!ordenDAO.restaurarPendiente(id)) {
-                        System.err.println("No se pudo revertir: la orden " + id + " ya esta pendiente o no existe.");
+                        ultimoError = "No se pudo revertir: la orden OM-" + id + " ya esta pendiente o no existe.";
+                        System.err.println(ultimoError);
                         return null;
                     }
                     ordenes.encolar(previa);        // snapshot: pendiente, sin fecha de cierre
@@ -302,7 +370,8 @@ public class GestorOrdenes {
                 case MODIFICAR:
                     // Restaurar los valores del snapshot en la BD y recalcular prioridad.
                     if (!ordenDAO.actualizar(previa)) {
-                        System.err.println("No se pudo revertir: la orden " + id + " ya no existe.");
+                        ultimoError = "No se pudo revertir: la orden OM-" + id + " ya no existe.";
+                        System.err.println(ultimoError);
                         return null;
                     }
                     OrdenMantenimiento actual = ordenes.buscarPorId(id);
@@ -353,7 +422,8 @@ public class GestorOrdenes {
     /** Hace rollback e imprime un error comprensible. La memoria queda sin cambios. */
     private void notificarErrorDeBD(SQLException e) {
         try { conexion.rollback(); } catch (SQLException r) { registrarError(r); }
-        System.err.println("Error en PostgreSQL: " + ConexionBD.mensajeAmigable(e));
+        ultimoError = "Error en PostgreSQL: " + ConexionBD.mensajeAmigable(e);
+        System.err.println(ultimoError);
     }
 
     /** Cancela la transaccion actual; automaticamente la BD descarta todo cambio pendiente. */
