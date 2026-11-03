@@ -38,13 +38,13 @@ public class ColaPrioridad {
     public OrdenMantenimiento verPrimera() { return tamano == 0 ? null : datos[0]; }
 
     /** Busca una orden por id (recorrido lineal). O(n). */
-    public OrdenMantenimiento buscarPorId(int id) {
+    public OrdenMantenimiento buscarPorId(long id) {
         int i = indiceDe(id);
         return i < 0 ? null : datos[i];
     }
 
     /** Elimina una orden por id (p. ej. cancelacion). Devuelve false si no existe. O(n). */
-    public boolean eliminarPorId(int id) {
+    public boolean eliminarPorId(long id) {
         int i = indiceDe(id);
         if (i < 0) return false;
         tamano--;
@@ -55,7 +55,7 @@ public class ColaPrioridad {
     }
 
     /** Reubica una orden cuyos criterios fueron modificados. O(n) por la busqueda + O(log n). */
-    public boolean reordenar(int id) {
+    public boolean reordenar(long id) {
         int i = indiceDe(id);
         if (i < 0) return false;
         subir(i); bajar(i);
@@ -71,7 +71,7 @@ public class ColaPrioridad {
         return salida;
     }
 
-    private int indiceDe(int id) {
+    private int indiceDe(long id) {
         for (int i = 0; i < tamano; i++) if (datos[i].getId() == id) return i;
         return -1;
     }

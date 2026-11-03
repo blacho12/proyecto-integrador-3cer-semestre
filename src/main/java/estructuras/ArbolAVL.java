@@ -31,12 +31,12 @@ public class ArbolAVL {
         return null;
     }
 
-    /** Modifica nombre y ubicacion (el codigo es la clave y no cambia). */
-    public boolean modificar(String codigo, String nombre, String ubicacion) {
+    /** Modifica nombre y area (el codigo es la clave y no cambia). */
+    public boolean modificar(String codigo, String nombre, int idArea) {
         Equipo e = buscar(codigo);
         if (e == null) return false;
         e.setNombre(nombre);
-        e.setUbicacion(ubicacion);
+        e.setIdArea(idArea);
         return true;
     }
 

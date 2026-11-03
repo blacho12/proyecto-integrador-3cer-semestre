@@ -1,71 +1,367 @@
 package app;
 
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.time.LocalDateTime;
+import java.util.List;
+
+import datos.AreaDAO;
+import datos.ConexionBD;
+import datos.EquipoDAO;
+import datos.OrdenDAO;
 import estructuras.Accion;
 import estructuras.ArbolAVL;
 import estructuras.ColaPrioridad;
 import estructuras.PilaAcciones;
+import modelo.Area;
 import modelo.Equipo;
 import modelo.OrdenMantenimiento;
+import modelo.OrdenMantenimiento.Estado;
 
-/** Une las tres estructuras: AVL de equipos, cola de prioridad de ordenes y pila de acciones. */
+/**
+ * Une las estructuras de memoria (AVL de equipos, cola de prioridad de ordenes y pila de
+ * acciones) con la persistencia en PostgreSQL mediante los DAO del paquete datos.
+ *
+ * PostgreSQL es la fuente de verdad: ninguna operacion se considera exitosa hasta que la
+ * transaccion se confirma (commit). Si falla, la memoria queda exactamente como estaba.
+ * La pila de acciones solo vive en memoria: al reiniciar el programa vuelve a estar vacia.
+ */
 public class GestorOrdenes {
     private final ArbolAVL equipos = new ArbolAVL();
     private final ColaPrioridad ordenes = new ColaPrioridad();
     private final PilaAcciones historial = new PilaAcciones();
-    private int siguienteId = 1;
-    private long siguienteConsecutivo = 1;
+
+    private final Connection conexion;
+    private final AreaDAO areaDAO;
+    private final EquipoDAO equipoDAO;
+    private final OrdenDAO ordenDAO;
+
+    /** Abre la conexion con PostgreSQL (variables DB_URL, DB_USER y DB_PASSWORD). */
+    public GestorOrdenes() throws SQLException {
+        this(ConexionBD.getConnection());
+    }
+
+    /** Permite inyectar una conexion propia (usado por las pruebas de integracion). */
+    public GestorOrdenes(Connection conexion) throws SQLException {
+        this.conexion = conexion;
+        this.conexion.setAutoCommit(false);   // cada operacion publica controla commit/rollback
+        this.areaDAO = new AreaDAO(conexion);
+        this.equipoDAO = new EquipoDAO(conexion);
+        this.ordenDAO = new OrdenDAO(conexion);
+    }
 
     public ArbolAVL getEquipos() { return equipos; }
     public ColaPrioridad getOrdenes() { return ordenes; }
     public PilaAcciones getHistorial() { return historial; }
+    public AreaDAO getAreaDAO() { return areaDAO; }
+    public EquipoDAO getEquipoDAO() { return equipoDAO; }
+    public OrdenDAO getOrdenDAO() { return ordenDAO; }
+    public Connection getConexionBD() { return conexion; }
 
-    /** Crea una orden si el equipo existe; registra la accion en la pila. Devuelve null si el equipo no existe. */
+    /** Cierra la conexion subyacente. */
+    public void cerrar() {
+        try { conexion.close(); } catch (SQLException e) { registrarError(e); }
+    }
+
+    // ------------------------------------------------------------------ inicializacion
+
+    /**
+     * Carga desde PostgreSQL lo que la sesion necesita en memoria:
+     * todos los equipos al AVL y solo las ordenes PENDIENTE a la cola.
+     * La pila de acciones se crea vacia (no se persiste ni se reconstruye).
+     */
+    public void inicializar() throws SQLException {
+        for (Equipo e : equipoDAO.consultarTodos()) {
+            if (equipos.buscar(e.getCodigo()) == null) equipos.insertar(e);  // sin duplicados
+        }
+        for (OrdenMantenimiento o : ordenDAO.consultarPorEstado(Estado.PENDIENTE)) {
+            if (ordenes.buscarPorId(o.getId()) == null) ordenes.encolar(o);  // sin duplicados
+        }
+        // Las ordenes CERRADA y CANCELADA permanecen solo en PostgreSQL, no entran a la cola.
+    }
+
+    // ------------------------------------------------------------------ areas y equipos
+
+    /** Registra un area en PostgreSQL y devuelve el objeto con su id generado; null si falla. */
+    public Area registrarArea(String nombre, String descripcion) {
+        try {
+            Area area = areaDAO.insertar(nombre, descripcion);
+            conexion.commit();
+            return area;
+        } catch (SQLException e) { notificarErrorDeBD(e); return null; }
+    }
+
+    /** Registra un equipo en PostgreSQL y lo inserta en el AVL; null si falla. */
+    public Equipo registrarEquipo(Equipo equipo) {
+        try {
+            equipoDAO.insertar(equipo);                 // la BD valida la clave foranea del area
+            equipos.insertar(equipo);                   // se mantiene sincronizado con la BD
+            conexion.commit();
+            return equipo;
+        } catch (SQLException e) { notificarErrorDeBD(e); return null; }
+    }
+
+    /** Elimina un equipo de la BD y del AVL; la BD rechaza si tiene ordenes asociadas. */
+    public boolean eliminarEquipo(String codigo) {
+        Equipo e = equipos.buscar(codigo);
+        if (e == null) return false;
+        try {
+            if (!equipoDAO.eliminar(codigo)) return false;
+            equipos.eliminar(codigo);
+            conexion.commit();
+            return true;
+        } catch (SQLException ex) { notificarErrorDeBD(ex); return false; }
+    }
+
+    public List<Area> consultarAreas() throws SQLException { return areaDAO.consultarTodas(); }
+
+    // ------------------------------------------------------------------ crear orden
+
+    /**
+     * Crea una orden verificando el equipo en el AVL y en PostgreSQL, perssiste la orden
+     * (la BD devuelve id, consecutivo y fecha de creacion), la encola y apila la accion CREAR.
+     * Si el INSERT falla no se toca la cola ni la pila. Devuelve null si falla.
+     */
     public OrdenMantenimiento crearOrden(String codigoEquipo, String tipo, String descripcion,
                                          int impacto, int riesgoSeguridad, boolean hayRespaldo) {
-        if (equipos.buscar(codigoEquipo) == null) return null;
-        OrdenMantenimiento o = new OrdenMantenimiento(siguienteId++, siguienteConsecutivo++,
-                codigoEquipo, tipo, descripcion, impacto, riesgoSeguridad, hayRespaldo);
-        ordenes.encolar(o);
-        historial.apilar(new Accion(Accion.Tipo.CREAR, o.copia()));
-        return o;
+        if (equipos.buscar(codigoEquipo) == null) {
+            System.err.println("El equipo '" + codigoEquipo + "' no existe en el catalogo de equipos.");
+            return null;
+        }
+        try {
+            if (equipoDAO.consultarPorCodigo(codigoEquipo) == null) {
+                System.err.println("El equipo '" + codigoEquipo + "' no existe en PostgreSQL.");
+                return null;
+            }
+        } catch (SQLException e) { notificarErrorDeBD(e); return null; }
+        try {
+            validarDatosOrden(tipo, descripcion, impacto, riesgoSeguridad);
+        } catch (IllegalArgumentException e) {
+            System.err.println(e.getMessage());
+            return null;
+        }
+
+        OrdenMantenimiento nueva = new OrdenMantenimiento(codigoEquipo, tipo, descripcion,
+                impacto, riesgoSeguridad, hayRespaldo);
+        try {
+            OrdenMantenimiento creada = ordenDAO.insertar(nueva);   // BD asigna id, consecutivo y fecha
+            ordenes.encolar(creada);
+            historial.apilar(new Accion(Accion.Tipo.CREAR, creada.copia()));
+            conexion.commit();
+            return creada;
+        } catch (SQLException e) {
+            notificarErrorDeBD(e);                      // la cola y la pila quedan intactas
+            return null;
+        }
     }
 
-    /** Cancela una orden pendiente (la saca de la cola) y guarda su estado previo para deshacer. */
-    public boolean cancelarOrden(int id) {
+    // ------------------------------------------------------------------ modificar orden
+
+    /**
+     * Modifica los campos editables de una orden PENDIENTE. Retira temporalmente la orden de
+     * la cola, aplica el cambio, actualiza PostgreSQL y la reencola para recalcular prioridad.
+     * Si la BD falla retorna los valores anteriores en memoria y en la cola.
+     */
+    public boolean modificarOrden(long id, String tipo, String descripcion,
+                                  int impacto, int riesgoSeguridad, boolean hayRespaldo) {
         OrdenMantenimiento o = ordenes.buscarPorId(id);
-        if (o == null) return false;
-        Accion a = new Accion(Accion.Tipo.CANCELAR, o.copia());
-        ordenes.eliminarPorId(id);
-        historial.apilar(a);
-        return true;
+        if (o == null || o.getEstado() != Estado.PENDIENTE) {
+            System.err.println("La orden " + id + " no existe o no esta pendiente.");
+            return false;
+        }
+        try {
+            validarDatosOrden(tipo, descripcion, impacto, riesgoSeguridad);
+        } catch (IllegalArgumentException e) {
+            System.err.println(e.getMessage());
+            return false;
+        }
+
+        OrdenMantenimiento previa = o.copia();      // copia completa de los valores anteriores
+        ordenes.eliminarPorId(id);                  // retiro temporal para recalcular prioridad
+        o.setTipo(tipo);
+        o.setDescripcion(descripcion);
+        o.setCriterios(impacto, riesgoSeguridad, hayRespaldo);
+        try {
+            if (!ordenDAO.actualizar(o)) {
+                restaurarValores(o, previa);
+                ordenes.encolar(o);
+                conexion.rollback();
+                System.err.println("La orden " + id + " ya no existe en PostgreSQL.");
+                return false;
+            }
+            ordenes.encolar(o);                     // reingreso con la nueva prioridad
+            historial.apilar(new Accion(Accion.Tipo.MODIFICAR, previa));
+            conexion.commit();
+            return true;
+        } catch (SQLException e) {
+            restaurarValores(o, previa);            // estado anterior en memoria
+            ordenes.encolar(o);                     // y de nuevo en la cola
+            notificarErrorDeBD(e);
+            return false;
+        }
     }
 
-    /** Atiende (cierra) la orden mas prioritaria. */
+    // ------------------------------------------------------------------ cancelar orden
+
+    /** Cancela una orden pendiente: la BD a CANCELADA con fecha de cierre y sale de la cola. */
+    public boolean cancelarOrden(long id) {
+        OrdenMantenimiento o = ordenes.buscarPorId(id);
+        if (o == null || o.getEstado() != Estado.PENDIENTE) {
+            System.err.println("La orden " + id + " no existe o no esta pendiente.");
+            return false;
+        }
+        OrdenMantenimiento previa = o.copia();
+        LocalDateTime cierre = LocalDateTime.now();
+        try {
+            if (!ordenDAO.cambiarEstado(id, Estado.CANCELADA, cierre)) return false;
+            ordenes.eliminarPorId(id);              // despues de que la BD confirmo el cambio
+            o.setEstado(Estado.CANCELADA);
+            o.setFechaCierre(cierre);
+            historial.apilar(new Accion(Accion.Tipo.CANCELAR, previa));
+            conexion.commit();
+            return true;
+        } catch (SQLException e) {
+            notificarErrorDeBD(e);                  // la orden permanece en la cola pendiente
+            return false;
+        }
+    }
+
+    // ------------------------------------------------------------------ cerrar orden
+
+    /** Atiende (cierra) la orden mas prioritaria. Si la BD falla, permanece en la cola. */
     public OrdenMantenimiento atenderSiguiente() {
         OrdenMantenimiento o = ordenes.verPrimera();
         if (o == null) return null;
-        Accion a = new Accion(Accion.Tipo.CERRAR, o.copia());
-        ordenes.desencolar();
-        o.setEstado(OrdenMantenimiento.Estado.CERRADA);
-        historial.apilar(a);
-        return o;
+        OrdenMantenimiento previa = o.copia();
+        LocalDateTime cierre = LocalDateTime.now();
+        try {
+            if (!ordenDAO.cambiarEstado(o.getId(), Estado.CERRADA, cierre)) {
+                System.err.println("La orden " + o.getId() + " ya no esta pendiente en PostgreSQL.");
+                return null;
+            }
+            ordenes.desencolar();
+            o.setEstado(Estado.CERRADA);
+            o.setFechaCierre(cierre);
+            historial.apilar(new Accion(Accion.Tipo.CERRAR, previa));
+            conexion.commit();
+            return o;
+        } catch (SQLException e) {
+            notificarErrorDeBD(e);                  // la orden permanece en la cola pendiente
+            return null;
+        }
     }
 
-    /** Deshace la ultima accion. Devuelve la accion revertida o null si no hay historial. */
+    // ------------------------------------------------------------------ consultar en la BD
+
+    public List<OrdenMantenimiento> consultarOrdenesPorEquipo(String codigoEquipo) throws SQLException {
+        return ordenDAO.consultarPorEquipo(codigoEquipo);
+    }
+
+    public List<OrdenMantenimiento> consultarOrdenesPorEstado(Estado estado) throws SQLException {
+        return ordenDAO.consultarPorEstado(estado);
+    }
+
+    public OrdenMantenimiento consultarOrden(long id) throws SQLException {
+        return ordenDAO.consultarPorId(id);
+    }
+
+    // ------------------------------------------------------------------ deshacer
+
+    /**
+     * Deshace la ultima accion (LIFO). La revision se hace primero en PostgreSQL dentro de
+     * la transaccion: solo si el commit es exitoso se retira la accion de la pila.
+     * Si la revision falla, la accion permanece en la pila y la memoria queda sin cambios.
+     * Devuelve la accion revertida, o null si no hay historial o fallo la revision.
+     */
     public Accion deshacer() {
-        Accion a = historial.desapilar();
-        if (a == null) return null;
-        switch (a.getTipo()) {
-            case CREAR:                       // deshacer una creacion = quitar la orden
-                ordenes.eliminarPorId(a.getIdOrden());
-                break;
-            case CANCELAR:                    // deshacer una cancelacion o un cierre = reinsertar la orden
-            case CERRAR:
-                ordenes.encolar(a.getEstadoPrevio().copia());
-                break;
-            default:                          // MODIFICAR se implementa en la siguiente entrega
-                break;
+        Accion accion = historial.verTope();
+        if (accion == null) return null;
+        OrdenMantenimiento previa = accion.getEstadoPrevio();
+        long id = accion.getIdOrden();
+        try {
+            switch (accion.getTipo()) {
+                case CREAR:
+                    // Revertir una creacion = eliminar el registro y retirarlo de las estructuras.
+                    if (!ordenDAO.eliminar(id)) {
+                        System.err.println("No se pudo revertir: la orden " + id + " ya no existe en PostgreSQL.");
+                        return null;
+                    }
+                    ordenes.eliminarPorId(id);
+                    break;
+
+                case CANCELAR:
+                case CERRAR:
+                    // Restaurar PENDIENTE con fecha_cierre NULL en la BD y reinsertar en la cola.
+                    if (!ordenDAO.restaurarPendiente(id)) {
+                        System.err.println("No se pudo revertir: la orden " + id + " ya esta pendiente o no existe.");
+                        return null;
+                    }
+                    ordenes.encolar(previa);        // snapshot: pendiente, sin fecha de cierre
+                    break;
+
+                case MODIFICAR:
+                    // Restaurar los valores del snapshot en la BD y recalcular prioridad.
+                    if (!ordenDAO.actualizar(previa)) {
+                        System.err.println("No se pudo revertir: la orden " + id + " ya no existe.");
+                        return null;
+                    }
+                    OrdenMantenimiento actual = ordenes.buscarPorId(id);
+                    if (actual != null) {
+                        ordenes.eliminarPorId(id);  // retirar, restaurar valores y recalcular
+                        restaurarValores(actual, previa);
+                        ordenes.encolar(actual);
+                    } else {
+                        ordenes.encolar(previa.copia());
+                    }
+                    break;
+            }
+            historial.desapilar();
+            conexion.commit();
+            return accion;
+        } catch (SQLException e) {
+            notificarErrorDeBD(e);                  // la accion permanece en la pila
+            return null;
         }
-        return a;
+    }
+
+    // ------------------------------------------------------------------ utilidades privadas
+
+    /** Devuelve los valores del snapshot a un objeto vivo (solo campos editables). */
+    private void restaurarValores(OrdenMantenimiento destino, OrdenMantenimiento previa) {
+        destino.setTipo(previa.getTipo());
+        destino.setDescripcion(previa.getDescripcion());
+        destino.setCriterios(previa.getImpacto(), previa.getRiesgoSeguridad(), previa.isHayRespaldo());
+    }
+
+    /** Valida los datos de una orden con las mismas reglas CHECK de la tabla. */
+    private void validarDatosOrden(String tipo, String descripcion,
+                                   int impacto, int riesgoSeguridad) {
+        if (!"PREVENTIVO".equals(tipo) && !"CORRECTIVO".equals(tipo)) {
+            throw new IllegalArgumentException("El tipo debe ser PREVENTIVO o CORRECTIVO.");
+        }
+        if (descripcion == null || descripcion.isBlank()) {
+            throw new IllegalArgumentException("La descripcion es obligatoria.");
+        }
+        if (impacto < 1 || impacto > 3) {
+            throw new IllegalArgumentException("El impacto de produccion debe estar entre 1 y 3.");
+        }
+        if (riesgoSeguridad < 1 || riesgoSeguridad > 3) {
+            throw new IllegalArgumentException("El riesgo de seguridad debe estar entre 1 y 3.");
+        }
+    }
+
+    /** Hace rollback e imprime un error comprensible. La memoria queda sin cambios. */
+    private void notificarErrorDeBD(SQLException e) {
+        try { conexion.rollback(); } catch (SQLException r) { registrarError(r); }
+        System.err.println("Error en PostgreSQL: " + ConexionBD.mensajeAmigable(e));
+    }
+
+    /** Cancela la transaccion actual; automaticamente la BD descarta todo cambio pendiente. */
+    private void revertir() {
+        try { conexion.rollback(); } catch (SQLException e) { registrarError(e); }
+    }
+
+    private void registrarError(SQLException e) {
+        System.err.println("Error en PostgreSQL: " + ConexionBD.mensajeAmigable(e));
     }
 }
