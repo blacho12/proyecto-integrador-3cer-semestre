@@ -4,9 +4,18 @@ Paquetes: modelo, estructuras, datos, app y ui.
 Requisitos
   - JDK 25 (el pom.xml usa maven.compiler.release=25)
   - Maven 3.9+
-  - PostgreSQL con el esquema de src/main/resources/esquema.sql aplicado
-  - Variables de entorno DB_URL, DB_USER y DB_PASSWORD
-    (en VS Code se cargan desde el archivo .env mediante envFile)
+  - PostgreSQL (local o en la nube) con el esquema de src/main/resources/esquema.sql
+    aplicado en la base indicada por DB_URL
+  - Variables DB_URL, DB_USER y DB_PASSWORD definidas en el archivo .env
+    de la raiz del proyecto (copie .env.ejemplo como .env y ajuste los valores).
+    La aplicacion lee ese archivo automaticamente, sin importar si se inicia
+    desde VS Code, desde el IDE o desde una terminal. Si las variables ya estan
+    definidas en el sistema, esas tienen prioridad sobre el .env.
+    Si el archivo esta en src/main/.env tambien se lee, pero si existen los dos
+    gana el de la raiz.
+  - Si la base esta en la nube (Aiven, Neon, Supabase...), la URL debe terminar
+    en ?sslmode=require; por ejemplo:
+      DB_URL=jdbc:postgresql://pg-xxxx.e.aivencloud.com:23333/defaultdb?sslmode=require
 
 Compilar y ejecutar las pruebas
   mvn clean test
@@ -18,7 +27,8 @@ Ejecutar la interfaz gráfica (Swing + FlatLaf)
     2. Elegir la configuración "Interfaz Swing (SGMI)".
     3. Iniciar la ejecución.
 
-  Desde una terminal (Windows / Git Bash), después de mvn clean package:
+  Desde una terminal (Windows / Git Bash), después de mvn clean package
+  (no hace falta exportar las variables: se leen del .env):
     mvn -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt
     java -cp "target/classes;$(cat target/cp.txt)" ui.MenuPrincipal
 
@@ -29,6 +39,8 @@ Pruebas de integración existentes (requieren PostgreSQL)
   java -cp "target/classes;$(cat target/cp.txt)" app.PruebaEstructuras
 
 Notas
+  - Si aparece "relation \"area\" does not exist", la base conectada esta vacia:
+    aplique src/main/resources/esquema.sql en esa base (en DBeaver o con psql).
   - La interfaz nunca ejecuta SQL directamente: usa GestorOrdenes y los DAO.
   - La pila de acciones es temporal y vive solo en memoria durante la sesión.
   - FlatLaf 3.5.4 se descarga automáticamente mediante Maven.

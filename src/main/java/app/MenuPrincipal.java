@@ -20,7 +20,7 @@ public class MenuPrincipal {
             gestor.inicializar();
         } catch (SQLException e) {
             System.err.println("No se pudo iniciar el sistema: " + e.getMessage());
-            System.err.println("Revise las variables DB_URL, DB_USER y DB_PASSWORD.");
+            System.err.println("Revise DB_URL, DB_USER y DB_PASSWORD en el archivo .env.");
             return;
         }
 
