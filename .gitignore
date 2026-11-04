@@ -1,6 +1,5 @@
 # Variables de entorno
 .env
-.env.*
 
 # Archivos generados por Maven
 target/
