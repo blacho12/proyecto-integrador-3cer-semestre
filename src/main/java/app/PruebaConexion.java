@@ -5,16 +5,18 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 
+import datos.Configuracion;
+
 public class PruebaConexion {
 
     public static void main(String[] args) {
 
-        String url = System.getenv("DB_URL");
-        String usuario = System.getenv("DB_USER");
-        String password = System.getenv("DB_PASSWORD");
+        String url = Configuracion.obtener("DB_URL");
+        String usuario = Configuracion.obtener("DB_USER");
+        String password = Configuracion.obtener("DB_PASSWORD");
 
         if (url == null || usuario == null || password == null) {
-            System.out.println("ERROR: Faltan variables de entorno.");
+            System.out.println("ERROR: Faltan DB_URL, DB_USER y DB_PASSWORD (entorno o archivo .env).");
             return;
         }
 

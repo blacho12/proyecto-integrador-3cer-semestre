@@ -364,8 +364,8 @@ public class MenuPrincipal extends JFrame implements ContextoApp {
                     System.err.println("No se pudo iniciar la aplicación: " + detalle);
                     int opcion = JOptionPane.showOptionDialog(MenuPrincipal.this,
                             "No se pudo conectar con PostgreSQL.\n\n" + detalle
-                                    + "\n\nVerifique que el servidor esté activo y que existan las "
-                                    + "variables de entorno DB_URL, DB_USER y DB_PASSWORD.",
+                                    + "\n\nVerifique que el servidor esté activo y que el archivo .env "
+                                    + "defina DB_URL, DB_USER y DB_PASSWORD (copie .env.ejemplo).",
                             "Sin conexión con PostgreSQL", JOptionPane.DEFAULT_OPTION,
                             JOptionPane.ERROR_MESSAGE, null,
                             new Object[]{"Reintentar", "Salir"}, "Reintentar");
