@@ -1,0 +1,16 @@
+# Credenciales: nunca deben viajar dentro de la imagen
+.env
+.env.local
+src/main/.env
+
+# Artefactos y metadatos de desarrollo
+target/
+.git/
+.gitignore
+.vscode/
+.idea/
+*.iml
+*.log
+
+# Documentacion (no se necesita en la imagen)
+documentacion.md
