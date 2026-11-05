@@ -64,6 +64,34 @@ public class PruebaIntegracion {
             verificar("4. Se rechaza un equipo con area inexistente",
                     g.registrarEquipo(new Equipo("EQ-TE-009", "Area fantasma", 999999)) == null);
 
+            System.out.println("\n--- 4b. Modificar y eliminar equipos ---");
+            verificar("4b. Se corrige el nombre del equipo",
+                    g.modificarEquipo(CODIGO_A, CODIGO_A, "Caldera corregida", area.getIdArea()));
+            Equipo corregido = g.getEquipos().buscar(CODIGO_A);
+            verificar("4b. El AVL refleja el nombre corregido",
+                    corregido != null && "Caldera corregida".equals(corregido.getNombre()));
+            Equipo enBd = g.getEquipoDAO().consultarPorCodigo(CODIGO_A);
+            verificar("4b. PostgreSQL refleja el nombre corregido",
+                    enBd != null && "Caldera corregida".equals(enBd.getNombre()));
+            verificar("4b. Rechaza cambiar a un codigo duplicado",
+                    !g.modificarEquipo(CODIGO_A, CODIGO_B, "Duplicado", area.getIdArea()));
+            verificar("4b. Rechaza modificar con un area inexistente",
+                    !g.modificarEquipo(CODIGO_A, CODIGO_A, "Caldera corregida", 999999));
+            verificar("4b. Se registra un equipo temporal",
+                    g.registrarEquipo(new Equipo("EQ-TE-003", "Equipo temporal", area.getIdArea())) != null);
+            verificar("4b. Se corrige el codigo de un equipo sin historial",
+                    g.modificarEquipo("EQ-TE-003", "EQ-TE-004", "Equipo corregido", area.getIdArea()));
+            verificar("4b. El AVL cambia de clave",
+                    g.getEquipos().buscar("EQ-TE-003") == null
+                            && g.getEquipos().buscar("EQ-TE-004") != null);
+            verificar("4b. PostgreSQL cambia de clave",
+                    g.getEquipoDAO().consultarPorCodigo("EQ-TE-003") == null
+                            && g.getEquipoDAO().consultarPorCodigo("EQ-TE-004") != null);
+            verificar("4b. Se elimina un equipo sin historial", g.eliminarEquipo("EQ-TE-004"));
+            verificar("4b. El equipo sale del AVL y de PostgreSQL",
+                    g.getEquipos().buscar("EQ-TE-004") == null
+                            && g.getEquipoDAO().consultarPorCodigo("EQ-TE-004") == null);
+
             System.out.println("\n--- 5-6. Creacion de ordenes (id y consecutivo de la BD) ---");
             OrdenMantenimiento alta  = g.crearOrden(CODIGO_A, "CORRECTIVO", "Fuga de vapor", 3, 3, false);  // ALTA
             OrdenMantenimiento baja  = g.crearOrden(CODIGO_B, "PREVENTIVO", "Lubricacion",  1, 1, true);     // BAJA
@@ -172,6 +200,15 @@ public class PruebaIntegracion {
             verificar("19. Tras reiniciar, las pendientes siguen en la cola", g3.getOrdenes().tamano() == 3);
             verificar("19. Tras reiniciar, el AVL conserva los equipos", g3.getEquipos().tamano() >= 2);
             g3.cerrar();
+
+            System.out.println("\n--- 21. Proteccion del historial de equipos ---");
+            verificar("21. No se elimina un equipo con ordenes", !g.eliminarEquipo(CODIGO_A));
+            verificar("21. El equipo permanece en el AVL", g.getEquipos().buscar(CODIGO_A) != null);
+            verificar("21. No se cambia el codigo de un equipo con historial",
+                    !g.modificarEquipo(CODIGO_A, "EQ-TE-005", "Caldera corregida", area.getIdArea()));
+            verificar("21. El mensaje explica que el codigo no se puede cambiar",
+                    g.getUltimoError() != null
+                            && g.getUltimoError().toLowerCase().contains("codigo"));
         } catch (SQLException e) {
             fallas++;
             System.out.println("FALLO | Inesperado en base de datos: " + ConexionBD.mensajeAmigable(e));
@@ -202,7 +239,8 @@ public class PruebaIntegracion {
      * Cada error hace rollback: una transaccion abortada no debe afectar a las sentencias siguientes.
      */
     private static void limpiarDatosPrevios(GestorOrdenes g) {
-        for (String codigo : new String[] { CODIGO_A, CODIGO_B, "EQ-TE-009", "EQ-DBG" }) {
+        for (String codigo : new String[] { CODIGO_A, CODIGO_B, "EQ-TE-003", "EQ-TE-004",
+                "EQ-TE-009", "EQ-DBG" }) {
             try {
                 for (OrdenMantenimiento o : g.getOrdenDAO().consultarPorEquipo(codigo)) {
                     if (g.getOrdenDAO().eliminar(o.getId())) commitPrueba(g);

@@ -30,10 +30,12 @@ import estructuras.Accion;
 import ui.componentes.PanelTarjeta;
 import ui.componentes.TareaBD;
 import ui.componentes.Tema;
+import ui.paneles.PanelAreas;
 import ui.paneles.PanelColaPrioridad;
 import ui.paneles.PanelDashboard;
 import ui.paneles.PanelEquipos;
 import ui.paneles.PanelEstadisticas;
+import ui.paneles.PanelHuellaCarbono;
 import ui.paneles.PanelHistorial;
 import ui.paneles.PanelOrdenes;
 
@@ -226,6 +228,8 @@ public class MenuPrincipal extends JFrame implements ContextoApp {
         registrarBotonNav(lateral, "ordenes", "Órdenes de mantenimiento");
         registrarBotonNav(lateral, "cola", "Cola de prioridad");
         registrarBotonNav(lateral, "equipos", "Equipos e índice AVL");
+        registrarBotonNav(lateral, "areas", "Gestión de áreas");
+        registrarBotonNav(lateral, "carbono", "Huella de carbono");
         registrarBotonNav(lateral, "historial", "Historial de acciones");
         registrarBotonNav(lateral, "estadisticas", "Indicadores y estadísticas");
 
@@ -364,8 +368,9 @@ public class MenuPrincipal extends JFrame implements ContextoApp {
                     System.err.println("No se pudo iniciar la aplicación: " + detalle);
                     int opcion = JOptionPane.showOptionDialog(MenuPrincipal.this,
                             "No se pudo conectar con PostgreSQL.\n\n" + detalle
-                                    + "\n\nVerifique que el servidor esté activo y que existan las "
-                                    + "variables de entorno DB_URL, DB_USER y DB_PASSWORD.",
+                                    + "\n\nVerifique que el servidor esté activo y que las credenciales "
+                                    + "DB_URL, DB_USER y DB_PASSWORD estén en src/main/.env, en .env "
+                                    + "o como variables de entorno.",
                             "Sin conexión con PostgreSQL", JOptionPane.DEFAULT_OPTION,
                             JOptionPane.ERROR_MESSAGE, null,
                             new Object[]{"Reintentar", "Salir"}, "Reintentar");
@@ -388,6 +393,8 @@ public class MenuPrincipal extends JFrame implements ContextoApp {
         registrarVista("ordenes", new PanelOrdenes(gestor, this));
         registrarVista("cola", new PanelColaPrioridad(gestor, this));
         registrarVista("equipos", new PanelEquipos(gestor, this));
+        registrarVista("areas", new PanelAreas(gestor, this));
+        registrarVista("carbono", new PanelHuellaCarbono(gestor, this));
         registrarVista("historial", new PanelHistorial(gestor, this));
         registrarVista("estadisticas", new PanelEstadisticas(gestor, this));
         contenido.revalidate();

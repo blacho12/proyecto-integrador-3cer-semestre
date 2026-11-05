@@ -20,7 +20,8 @@ public class MenuPrincipal {
             gestor.inicializar();
         } catch (SQLException e) {
             System.err.println("No se pudo iniciar el sistema: " + e.getMessage());
-            System.err.println("Revise las variables DB_URL, DB_USER y DB_PASSWORD.");
+            System.err.println("Revise src/main/.env (o las variables de entorno) y la migracion "
+                    + "src/main/resources/esquema_carbono_areas.sql.");
             return;
         }
 

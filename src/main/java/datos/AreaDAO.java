@@ -5,7 +5,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import modelo.Area;
 
@@ -58,6 +60,40 @@ public class AreaDAO {
             ps.setInt(3, area.getIdArea());
             return ps.executeUpdate() > 0;
         }
+    }
+
+    /** Comprueba si ya existe un area con ese nombre (sin distinguir mayusculas). */
+    public boolean existeNombre(String nombre, int excluirIdArea) throws SQLException {
+        String sql = "SELECT 1 FROM area WHERE LOWER(nombre) = LOWER(?) AND id_area <> ? LIMIT 1";
+        try (PreparedStatement ps = conexion.prepareStatement(sql)) {
+            ps.setString(1, nombre);
+            ps.setInt(2, excluirIdArea);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+
+    /** Numero de equipos que referencian el area (para bloquear el borrado en cascada). */
+    public int contarEquipos(int idArea) throws SQLException {
+        String sql = "SELECT COUNT(*) FROM equipo WHERE id_area = ?";
+        try (PreparedStatement ps = conexion.prepareStatement(sql)) {
+            ps.setInt(1, idArea);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
+    /** Cantidad de equipos por area, para mostrarla en la tabla de gestion de areas. */
+    public Map<Integer, Integer> contarEquiposPorArea() throws SQLException {
+        Map<Integer, Integer> conteo = new LinkedHashMap<>();
+        String sql = "SELECT id_area, COUNT(*) AS total FROM equipo GROUP BY id_area ORDER BY id_area";
+        try (PreparedStatement ps = conexion.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) conteo.put(rs.getInt("id_area"), rs.getInt("total"));
+        }
+        return conteo;
     }
 
     /**

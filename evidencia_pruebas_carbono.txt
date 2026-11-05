@@ -1,0 +1,223 @@
+EVIDENCIA DE PRUEBAS - Huella de carbono y gestion de areas
+Fecha: 2026-11-05
+Entorno de verificacion: PostgreSQL 18 local, JDK 21, javac --release 21 (sin Maven).
+Base: jdbc:postgresql://localhost:55432/mantenimiento
+
+=== 1. Compilacion de todo src/main/java ===
+javac -encoding UTF-8 --release 21 ... -> COMPILE_EXIT=0
+
+=== 2. Prueba nueva: app.PruebaCarbonoAreas ===
+=== PRUEBAS DE HUELLA DE CARBONO Y GESTION DE AREAS ===
+
+--- 1. Formula de CalculadoraCarbono (sin base de datos) ---
+OK    | 1.1 Ejemplo: consumo adicional = 12 kWh
+OK    | 1.2 Ejemplo: emisiones = 1.8 kg CO2
+OK    | 1.3 Rechaza consumo normal negativo
+OK    | 1.4 Rechaza horas negativas
+OK    | 1.5 Rechaza porcentaje negativo
+OK    | 1.6 Rechaza factor de emision negativo
+
+--- Limpieza de datos de ejecuciones anteriores ---
+
+--- 2. Gestion completa de areas ---
+OK    | 2.1 Crear area con id generado
+OK    | 2.2 Rechazar nombre vacio
+OK    | 2.3 Rechazar nombre duplicado
+OK    | 2.3 Rechazar duplicado ignorando mayusculas
+OK    | 2.4 Crear segunda area
+OK    | 2.5 Modificar nombre y descripcion del area
+OK    | 2.5 Los cambios se guardan en PostgreSQL
+OK    | 2.6 Rechazar un nombre que ya usa otra area
+OK    | 2.7 Eliminar un area sin equipos
+OK    | 2.7 El area eliminada ya no existe
+OK    | 2.8 Registrar equipos en el area
+OK    | 2.9 No se elimina un area con equipos asociados
+OK    | 2.9 El mensaje explica que hay equipos asociados
+OK    | 2.9 El area sigue existiendo
+OK    | 2.10 El area modificada persiste tras reiniciar la aplicacion
+
+--- 3. Parametros por equipo y validaciones ---
+OK    | 3.1 Configurar equipo A: 10 kWh/h y 15% extra
+OK    | 3.1 Configurar equipo B: 20 kWh/h y 10% extra
+OK    | 3.2 Rechazar consumo normal negativo
+OK    | 3.2 Rechazar porcentaje negativo
+OK    | 3.2 Rechazar porcentaje mayor que 100
+OK    | 3.2 Rechazar factor de emision negativo
+OK    | 3.2 Los rechazos no alteran los parametros guardados
+OK    | 3.3 Configurar factor de emision de la planta en 0.15 kg CO2/kWh
+OK    | 3.4 Crear area para una maquina sin registros
+OK    | 3.4 Crear equipo C sin registros de carbono
+OK    | 3.4 Configurar equipo C: 5 kWh/h y 20% extra
+OK    | 3.5 Una maquina sin registros no genera emisiones
+
+--- 4. Calculo y registro de emisiones ---
+OK    | 4.1 Equipo A, 8 h: consumo adicional = 12 kWh
+OK    | 4.1 Equipo A, 8 h: emisiones = 1.8 kg CO2
+OK    | 4.1 El registro conserva el factor utilizado
+OK    | 4.2 Rechazar horas negativas
+OK    | 4.3 Equipo B, 5 h: 10 kWh y 1.5 kg CO2
+OK    | 4.4 Equipo A, 2 h: 3 kWh y 0.45 kg CO2
+
+--- 5. Indicadores consolidados ---
+OK    | 5.1 Total adicional de toda la planta = 3.75 kg CO2
+OK    | 5.2 Emisiones adicionales del equipo A = 2.25 kg CO2
+OK    | 5.2 Emisiones adicionales del equipo B = 1.5 kg CO2
+OK    | 5.3 La maquina C sigue sin registros
+OK    | 5.4 Consolidado por area = 3.75 kg CO2 (dos maquinas en la misma area)
+OK    | 5.5 Numero de maquinas que generaron emisiones = base + 2
+OK    | 5.6 El historial contiene los tres registros nuevos
+
+--- 6. Persistencia tras reiniciar ---
+OK    | 6.1 Los registros siguen disponibles despues de reiniciar
+OK    | 6.2 Los dos registros del equipo A persisten
+OK    | 6.3 El factor de la planta persiste
+OK    | 6.4 El area modificada persiste
+
+--- 7. Trazabilidad del factor de emision ---
+OK    | 7.1 Cambiar el factor de la planta a 0.20
+OK    | 7.2 El nuevo registro usa el factor vigente
+OK    | 7.3 Equipo A, 1 h con factor 0.20: 0.30 kg CO2
+OK    | 7.4 Cada registro conserva el factor con el que fue calculado
+
+--- Limpieza final ---
+
+=== RESUMEN: 54 OK, 0 FALLAS ===
+EXIT=0
+
+=== 3. Regresion: app.PruebaIntegracion ===
+=== PRUEBA DE INTEGRACION CON POSTGRESQL ===
+--- 1. Conectando a PostgreSQL... ---
+OK    | La conexion se establecio.
+
+--- Limpieza de datos de ejecuciones anteriores ---
+
+--- 2-3. Areas ---
+OK    | 2. Se inserto un area con id generado
+OK    | 3. Se consulta el area por id
+OK    | 3. Se listan las areas
+OK    | 3. Se rechaza un nombre de area duplicado
+OK    | 3. Se actualiza el area y se consulta de nuevo
+
+--- 4. Equipos y clave foranea ---
+OK    | 4. Se insertaron dos equipos
+Error en PostgreSQL: Clave foranea invalida: el area, equipo u orden relacionado no existe, o el equipo tiene ordenes o registros de carbono asociados.
+OK    | 4. Se rechaza un equipo con area inexistente
+
+--- 5-6. Creacion de ordenes (id y consecutivo de la BD) ---
+OK    | 5. Se crearon tres ordenes
+OK    | 6. La BD genero el id_orden
+OK    | 6. La BD genero el consecutivo
+OK    | 6. La BD genero la fecha de creacion
+OK    | 6. El consecutivo crece con la antiguedad
+
+--- 7-8. Rechazo de datos invalidos ---
+El impacto de produccion debe estar entre 1 y 3.
+OK    | 7. Rechaza impacto fuera de 1-3
+El riesgo de seguridad debe estar entre 1 y 3.
+OK    | 7. Rechaza riesgo fuera de 1-3
+El tipo debe ser PREVENTIVO o CORRECTIVO.
+OK    | 8. Rechaza un tipo invalido
+La descripcion es obligatoria.
+OK    | 8. Rechaza una descripcion nula
+El equipo 'EQ-NADA' no existe en el catalogo de equipos.
+OK    | 8. Rechaza un equipo inexistente
+
+--- 9-11. Carga inicial y orden de atencion ---
+OK    | 9. El AVL se recargo desde la BD
+OK    | 10. La cola se recargo con las pendientes
+OK    | 11. La primera es la mas critica
+OK    | 11. El orden es criticidad y luego consecutivo
+
+--- 12. Cancelar ---
+OK    | 12. Se cancela una pendiente
+OK    | 12. Sale de la cola
+OK    | 12. En BD queda CANCELADA con fecha de cierre
+La orden OM-9 no existe o no esta pendiente.
+OK    | 12. No se puede cancelar de nuevo
+
+--- 13. Cerrar la mas prioritaria ---
+OK    | 13. Se cierra la mas prioritaria
+OK    | 13. En BD queda CERRADA con fecha de cierre
+
+--- 17 y 18. Deshacer CERRAR y CANCELAR (las ultimas acciones, LIFO) ---
+OK    | 17. (CERRAR) restaura PENDIENTE sin fecha de cierre
+OK    | 17. La orden vuelve a la cola
+OK    | 18. (CANCELAR) restaura PENDIENTE sin fecha de cierre
+OK    | 18. La orden vuelve a la cola
+
+--- 14. Modificar ---
+OK    | 14. Se modifica una pendiente
+OK    | 14. La BD refleja la modificacion y la criticidad se recalcula
+La orden OM-999999 no existe o no esta pendiente.
+OK    | 14. No se puede modificar una orden inexistente
+
+--- 16. Deshacer MODIFICAR (la ultima accion del LIFO) ---
+OK    | 16. (MODIFICAR) restaura los valores del snapshot
+
+--- 15. Deshacer CREAR ---
+OK    | 15. La accion quedo en la pila
+OK    | 15. La BD ya no tiene la orden creada
+OK    | 15. La cola ya no tiene la orden creada
+
+--- 15b. Deshacer CREAR de la orden modificada (siguiente en LIFO) ---
+OK    | 15b. La creacion revertida elimino la orden de la BD
+OK    | 15b. Y ya no esta en la cola
+
+--- 19-20. Reinicio con recuperacion y pila vacia ---
+OK    | 20. Tras reiniciar, la pila de deshacer esta vacia
+OK    | 19. Tras reiniciar, las pendientes siguen en la cola
+OK    | 19. Tras reiniciar, el AVL conserva los equipos
+
+--- Limpieza final de los datos de prueba ---
+
+=== RESUMEN: 43 OK, 0 FALLAS ===
+EXIT=0
+
+=== 4. Regresion: app.PruebaEstructuras ===
+=== PRUEBA 1: Cola de prioridad ===
+Desencolar con cola vacia -> null
+Tamano: 5 | Primera: OM-3#3 [ALTA, equipo EQ-002, CORRECTIVO, PENDIENTE]
+Orden de atencion:
+  OM-3#3 [ALTA, equipo EQ-002, CORRECTIVO, PENDIENTE]
+  OM-4#4 [ALTA, equipo EQ-005, CORRECTIVO, PENDIENTE]
+  OM-1#1 [MEDIA, equipo EQ-003, CORRECTIVO, PENDIENTE]
+  OM-5#5 [MEDIA, equipo EQ-004, PREVENTIVO, PENDIENTE]
+  OM-2#2 [BAJA, equipo EQ-001, PREVENTIVO, PENDIENTE]
+Eliminar orden inexistente (99) -> false
+Cancelar OM-3 -> true | Nueva primera: OM-4#4 [ALTA, equipo EQ-005, CORRECTIVO, PENDIENTE]
+Cola vaciada. Primera -> null
+
+=== PRUEBA 2: Arbol AVL de equipos ===
+Buscar con arbol vacio -> null
+Insertados 7 codigos consecutivos. Tamano: 7 | Altura: 3 (un arbol sin balancear tendria altura 7)
+Insertar codigo duplicado EQ-004 -> false
+Buscar EQ-005 -> EQ-005 - Equipo 5 (area 3)
+Buscar EQ-999 (inexistente) -> null
+Modificar EQ-005 -> true | EQ-005 - Compresor nuevo (area 9)
+Eliminar EQ-004 (raiz, dos hijos) -> true
+Eliminar EQ-999 (inexistente) -> false
+Inorden: EQ-001 EQ-002 EQ-003 EQ-005 EQ-006 EQ-007 | Altura: 3
+
+=== PRUEBA 3: Pila de acciones ===
+Desapilar con pila vacia -> null
+Un solo elemento. Tope: CREAR | Tamano: 1
+Desapilando (LIFO): CERRAR CANCELAR CREAR 
+
+=== PRUEBA 4: Gestor integrado y deshacer (requiere base de datos) ===
+Deshacer sin historial -> null
+Registrar equipo EQ-TE-001 -> true
+Error en PostgreSQL: Ya existe un registro con esa clave (codigo o nombre duplicado).
+Registrar equipo duplicado EQ-TE-001 -> false
+El equipo 'EQ-999' no existe en el catalogo de equipos.
+Crear orden con equipo inexistente -> null
+Creadas: OM-13#13 [BAJA, equipo EQ-TE-002, PREVENTIVO, PENDIENTE] y OM-14#14 [ALTA, equipo EQ-TE-001, CORRECTIVO, PENDIENTE] | Primera: OM-14#14 [ALTA, equipo EQ-TE-001, CORRECTIVO, PENDIENTE]
+Cancelada OM-14 -> Primera: OM-13#13 [BAJA, equipo EQ-TE-002, PREVENTIVO, PENDIENTE]
+Deshacer cancelacion -> Primera: OM-14#14 [ALTA, equipo EQ-TE-001, CORRECTIVO, PENDIENTE]
+Deshacer creacion de OM-14 -> Primera: OM-13#13 [BAJA, equipo EQ-TE-002, PREVENTIVO, PENDIENTE] | Tamano cola: 1
+EXIT=0
+
+=== 5. Smoke test headless de los paneles nuevos ===
+PanelAreas componentes=2
+PanelHuellaCarbono componentes=2
+SMOKE UI OK
+EXIT=0

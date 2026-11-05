@@ -5,8 +5,24 @@ Requisitos
   - JDK 25 (el pom.xml usa maven.compiler.release=25)
   - Maven 3.9+
   - PostgreSQL con el esquema de src/main/resources/esquema.sql aplicado
-  - Variables de entorno DB_URL, DB_USER y DB_PASSWORD
-    (en VS Code se cargan desde el archivo .env mediante envFile)
+    y la migracion src/main/resources/esquema_carbono_areas.sql
+  - Credenciales DB_URL, DB_USER y DB_PASSWORD. La aplicacion lee primero las
+    variables de entorno y, si no existen, un archivo .env. Busca src/main/.env
+    y .env desde el directorio actual hacia arriba; tambien acepta
+    SGMI_ENV_FILE=/ruta/al/.env. El formato admite "CLAVE = valor".
+
+Nuevas funcionalidades (equipos, areas y huella de carbono)
+  - Aplicar la migracion sobre una base ya existente (es idempotente):
+      psql -U postgres -d mantenimiento -f src/main/resources/esquema_carbono_areas.sql
+    Si la base es nueva, aplicar primero esquema.sql y luego la migracion.
+  - La vista "Equipos e indice AVL" permite crear, corregir y eliminar equipos.
+    Al guardar se actualiza PostgreSQL y el AVL. El codigo solo se puede corregir si el
+    equipo no tiene ordenes ni registros de carbono; no hay borrado en cascada.
+  - La vista "Gestion de areas" permite crear, consultar, modificar y eliminar areas.
+    No se elimina un area con equipos asociados y no hay borrado en cascada.
+  - La vista "Huella de carbono" configura el consumo normal y el porcentaje extra de
+    cada equipo, el factor de emision de la planta y registra las horas en mal estado.
+    Los registros se guardan en registro_carbono con el factor utilizado.
 
 Compilar y ejecutar las pruebas
   mvn clean test
@@ -24,9 +40,10 @@ Ejecutar la interfaz gráfica (Swing + FlatLaf)
 
   También se conserva el menú de consola en app.MenuPrincipal.
 
-Pruebas de integración existentes (requieren PostgreSQL)
+Pruebas de integración (requieren PostgreSQL)
   java -cp "target/classes;$(cat target/cp.txt)" app.PruebaIntegracion
   java -cp "target/classes;$(cat target/cp.txt)" app.PruebaEstructuras
+  java -cp "target/classes;$(cat target/cp.txt)" app.PruebaCarbonoAreas
 
 Notas
   - La interfaz nunca ejecuta SQL directamente: usa GestorOrdenes y los DAO.

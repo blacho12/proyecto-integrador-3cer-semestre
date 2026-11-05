@@ -1,11 +1,18 @@
 package app;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import datos.AreaDAO;
+import datos.CarbonoDAO;
 import datos.ConexionBD;
 import datos.EquipoDAO;
 import datos.OrdenDAO;
@@ -16,6 +23,8 @@ import estructuras.PilaAcciones;
 import modelo.Area;
 import modelo.Equipo;
 import modelo.OrdenMantenimiento;
+import modelo.RegistroCarbono;
+import modelo.ResumenCarbono;
 import modelo.OrdenMantenimiento.Estado;
 
 /**
@@ -31,10 +40,13 @@ public class GestorOrdenes {
     private final ColaPrioridad ordenes = new ColaPrioridad();
     private final PilaAcciones historial = new PilaAcciones();
 
+    private static final BigDecimal CIEN = new BigDecimal("100");
+
     private final Connection conexion;
     private final AreaDAO areaDAO;
     private final EquipoDAO equipoDAO;
     private final OrdenDAO ordenDAO;
+    private final CarbonoDAO carbonoDAO;
 
     /** Ultimo mensaje de error comprensible; la interfaz lo muestra al usuario. */
     private volatile String ultimoError;
@@ -51,6 +63,7 @@ public class GestorOrdenes {
         this.areaDAO = new AreaDAO(conexion);
         this.equipoDAO = new EquipoDAO(conexion);
         this.ordenDAO = new OrdenDAO(conexion);
+        this.carbonoDAO = new CarbonoDAO(conexion);
     }
 
     public ArbolAVL getEquipos() { return equipos; }
@@ -59,6 +72,7 @@ public class GestorOrdenes {
     public AreaDAO getAreaDAO() { return areaDAO; }
     public EquipoDAO getEquipoDAO() { return equipoDAO; }
     public OrdenDAO getOrdenDAO() { return ordenDAO; }
+    public CarbonoDAO getCarbonoDAO() { return carbonoDAO; }
     public Connection getConexionBD() { return conexion; }
 
     /** Ultimo error de negocio o de PostgreSQL, o null si la ultima operacion fue exitosa. */
@@ -98,13 +112,80 @@ public class GestorOrdenes {
 
     // ------------------------------------------------------------------ areas y equipos
 
-    /** Registra un area en PostgreSQL y devuelve el objeto con su id generado; null si falla. */
+    /**
+     * Registra un area validando nombre obligatorio, longitud y duplicados (sin distinguir
+     * mayusculas). Devuelve el objeto con su id generado o null si la operacion falla.
+     */
     public Area registrarArea(String nombre, String descripcion) {
         try {
-            Area area = areaDAO.insertar(nombre, descripcion);
+            String nombreLimpio = validarNombreArea(nombre);
+            String descripcionLimpia = normalizarDescripcionArea(descripcion);
+            if (areaDAO.existeNombre(nombreLimpio, 0)) {
+                ultimoError = "Ya existe un area con el nombre «" + nombreLimpio + "».";
+                return null;
+            }
+            Area area = areaDAO.insertar(nombreLimpio, descripcionLimpia);
             conexion.commit();
             return area;
+        } catch (IllegalArgumentException e) {
+            ultimoError = e.getMessage();
+            return null;
         } catch (SQLException e) { notificarErrorDeBD(e); return null; }
+    }
+
+    /** Modifica nombre y descripcion de un area existente; false si falla o hay duplicado. */
+    public boolean modificarArea(int idArea, String nombre, String descripcion) {
+        try {
+            String nombreLimpio = validarNombreArea(nombre);
+            String descripcionLimpia = normalizarDescripcionArea(descripcion);
+            if (areaDAO.consultarPorId(idArea) == null) {
+                ultimoError = "El area con id " + idArea + " no existe en PostgreSQL.";
+                return false;
+            }
+            if (areaDAO.existeNombre(nombreLimpio, idArea)) {
+                ultimoError = "Ya existe otra area con el nombre «" + nombreLimpio + "».";
+                return false;
+            }
+            if (!areaDAO.actualizar(new Area(idArea, nombreLimpio, descripcionLimpia))) {
+                conexion.rollback();
+                ultimoError = "El area con id " + idArea + " ya no existe en PostgreSQL.";
+                return false;
+            }
+            conexion.commit();
+            return true;
+        } catch (IllegalArgumentException e) {
+            ultimoError = e.getMessage();
+            return false;
+        } catch (SQLException e) { notificarErrorDeBD(e); return false; }
+    }
+
+    /**
+     * Elimina un area solo si no tiene equipos asociados. No se hace borrado en cascada:
+     * primero se comprueba en Java para explicar el motivo y la clave foranea fk_equipo_area
+     * (ON DELETE RESTRICT) actua como segunda barrera.
+     */
+    public boolean eliminarArea(int idArea) {
+        try {
+            Area area = areaDAO.consultarPorId(idArea);
+            if (area == null) {
+                ultimoError = "El area con id " + idArea + " no existe en PostgreSQL.";
+                return false;
+            }
+            int equiposAsociados = areaDAO.contarEquipos(idArea);
+            if (equiposAsociados > 0) {
+                ultimoError = "No se puede eliminar el area «" + area.getNombre() + "»: tiene "
+                        + equiposAsociados + " equipo(s) asociado(s). Reasigne o elimine primero "
+                        + "esos equipos; no se permite el borrado en cascada.";
+                return false;
+            }
+            if (!areaDAO.eliminar(idArea)) {
+                conexion.rollback();
+                ultimoError = "El area con id " + idArea + " ya no existe en PostgreSQL.";
+                return false;
+            }
+            conexion.commit();
+            return true;
+        } catch (SQLException e) { notificarErrorDeBD(e); return false; }
     }
 
     /** Registra un equipo en PostgreSQL y lo inserta en el AVL; null si falla. */
@@ -117,22 +198,246 @@ public class GestorOrdenes {
         } catch (SQLException e) { notificarErrorDeBD(e); return null; }
     }
 
-    /** Elimina un equipo de la BD y del AVL; la BD rechaza si tiene ordenes asociadas. */
+    /**
+     * Corrige nombre, area y, si el equipo no tiene historial, el codigo. El codigo es la clave
+     * del AVL y de las claves foraneas; se bloquea su cambio cuando existen ordenes o registros
+     * de carbono para no romper la trazabilidad. Mantiene el AVL sincronizado con PostgreSQL.
+     */
+    public boolean modificarEquipo(String codigoActual, String nuevoCodigo, String nombre, int idArea) {
+        try {
+            String actual = codigoActual == null ? "" : codigoActual.trim();
+            String nuevo = nuevoCodigo == null ? "" : nuevoCodigo.trim().toUpperCase();
+            String nombreLimpio = validarNombreEquipo(nombre);
+
+            if (actual.isEmpty()) {
+                throw new IllegalArgumentException("Seleccione un equipo para modificarlo.");
+            }
+            validarCodigoEquipo(nuevo);
+
+            Equipo existente = equipos.buscar(actual);
+            if (existente == null) {
+                ultimoError = "El equipo '" + actual + "' no existe en el indice AVL.";
+                return false;
+            }
+            if (areaDAO.consultarPorId(idArea) == null) {
+                ultimoError = "El area con id " + idArea + " no existe en PostgreSQL.";
+                return false;
+            }
+
+            boolean cambiaCodigo = !nuevo.equals(actual);
+            if (cambiaCodigo) {
+                if (equipoDAO.consultarPorCodigo(nuevo) != null) {
+                    ultimoError = "Ya existe un equipo con el codigo '" + nuevo + "'.";
+                    return false;
+                }
+                if (equipoDAO.tieneDependencias(actual)) {
+                    ultimoError = "No se puede cambiar el codigo del equipo '" + actual
+                            + "': tiene ordenes o registros de carbono asociados. "
+                            + "Puede corregir el nombre o el area sin alterar el historial.";
+                    return false;
+                }
+            }
+
+            if (!equipoDAO.actualizar(actual, nuevo, nombreLimpio, idArea)) {
+                conexion.rollback();
+                ultimoError = "El equipo '" + actual + "' ya no existe en PostgreSQL.";
+                return false;
+            }
+
+            if (!cambiaCodigo) {
+                existente.setNombre(nombreLimpio);
+                existente.setIdArea(idArea);
+            } else {
+                Equipo actualizado = new Equipo(nuevo, nombreLimpio, idArea,
+                        existente.getConsumoNormalKwh(), existente.getPorcentajeExtra());
+                boolean retirado = equipos.eliminar(actual);
+                boolean insertado = equipos.insertar(actualizado);
+                if (!retirado || !insertado) {
+                    equipos.eliminar(nuevo);
+                    equipos.insertar(existente);
+                    conexion.rollback();
+                    ultimoError = "No se pudo actualizar el indice AVL; el cambio se revirtio.";
+                    return false;
+                }
+            }
+            conexion.commit();
+            return true;
+        } catch (IllegalArgumentException e) {
+            ultimoError = e.getMessage();
+            return false;
+        } catch (SQLException e) { notificarErrorDeBD(e); return false; }
+    }
+
+    /**
+     * Elimina un equipo de PostgreSQL y del AVL. No hay borrado en cascada: se rechaza si tiene
+     * ordenes o registros de carbono para conservar el historial de mantenimiento y emisiones.
+     */
     public boolean eliminarEquipo(String codigo) {
-        Equipo e = equipos.buscar(codigo);
+        String codigoLimpio = codigo == null ? "" : codigo.trim();
+        Equipo e = equipos.buscar(codigoLimpio);
         if (e == null) {
-            ultimoError = "El equipo '" + codigo + "' no existe en el indice AVL.";
+            ultimoError = "El equipo '" + codigoLimpio + "' no existe en el indice AVL.";
             return false;
         }
         try {
-            if (!equipoDAO.eliminar(codigo)) return false;
-            equipos.eliminar(codigo);
+            if (equipoDAO.tieneDependencias(codigoLimpio)) {
+                ultimoError = "No se puede eliminar el equipo '" + codigoLimpio
+                        + "': tiene ordenes o registros de carbono asociados. "
+                        + "Se conserva el historial; no se hace borrado en cascada.";
+                return false;
+            }
+            if (!equipoDAO.eliminar(codigoLimpio)) {
+                conexion.rollback();
+                ultimoError = "El equipo '" + codigoLimpio + "' ya no existe en PostgreSQL.";
+                return false;
+            }
+            if (!equipos.eliminar(codigoLimpio)) {
+                conexion.rollback();
+                ultimoError = "No se pudo retirar el equipo '" + codigoLimpio + "' del indice AVL.";
+                return false;
+            }
             conexion.commit();
             return true;
         } catch (SQLException ex) { notificarErrorDeBD(ex); return false; }
     }
 
     public List<Area> consultarAreas() throws SQLException { return areaDAO.consultarTodas(); }
+
+    /** Cantidad de equipos por area para la tabla de gestion de areas. */
+    public Map<Integer, Integer> contarEquiposPorArea() throws SQLException {
+        return areaDAO.contarEquiposPorArea();
+    }
+
+    /** Equipos persistidos (incluye los parametros de consumo de carbono). */
+    public List<Equipo> consultarEquipos() throws SQLException { return equipoDAO.consultarTodos(); }
+
+    // ------------------------------------------------------------------ huella de carbono
+
+    /**
+     * Guarda el consumo normal (kWh/h) y el porcentaje extra de un equipo. Ambos datos viven
+     * en la fila del equipo: no se repiten en cada registro de carbono. Devuelve false si el
+     * equipo no existe o si algun valor es negativo.
+     */
+    public boolean configurarParametrosEquipo(String codigo, BigDecimal consumoNormalKwh,
+                                              BigDecimal porcentajeExtra) {
+        try {
+            if (codigo == null || codigo.isBlank()) {
+                throw new IllegalArgumentException("El codigo del equipo es obligatorio.");
+            }
+            CalculadoraCarbono.validarNoNegativo("consumo energetico normal", consumoNormalKwh);
+            CalculadoraCarbono.validarNoNegativo("porcentaje de consumo adicional", porcentajeExtra);
+            if (porcentajeExtra.compareTo(CIEN) > 0) {
+                throw new IllegalArgumentException(
+                        "El porcentaje de consumo adicional no puede superar 100.");
+            }
+
+            BigDecimal consumoLimpio = consumoNormalKwh.setScale(2, RoundingMode.HALF_UP);
+            BigDecimal porcentajeLimpio = porcentajeExtra.setScale(2, RoundingMode.HALF_UP);
+
+            if (equipoDAO.consultarPorCodigo(codigo) == null) {
+                ultimoError = "El equipo '" + codigo + "' no existe en PostgreSQL.";
+                return false;
+            }
+            if (!equipoDAO.actualizarParametrosCarbono(codigo, consumoLimpio, porcentajeLimpio)) {
+                conexion.rollback();
+                ultimoError = "El equipo '" + codigo + "' ya no existe en PostgreSQL.";
+                return false;
+            }
+            conexion.commit();
+
+            Equipo enMemoria = equipos.buscar(codigo);
+            if (enMemoria != null) {
+                enMemoria.setConsumoNormalKwh(consumoLimpio);
+                enMemoria.setPorcentajeExtra(porcentajeLimpio);
+            }
+            return true;
+        } catch (IllegalArgumentException e) {
+            ultimoError = e.getMessage();
+            return false;
+        } catch (SQLException e) { notificarErrorDeBD(e); return false; }
+    }
+
+    /**
+     * Calcula y persiste las emisiones adicionales de un equipo para las horas indicadas.
+     * Usa el consumo y el porcentaje configurados en el equipo y el factor vigente de la
+     * planta, que queda guardado en el registro para conservar la trazabilidad.
+     * Devuelve null si el equipo no existe, hay datos invalidos o falla PostgreSQL.
+     */
+    public RegistroCarbono registrarEmisionCarbono(String codigoEquipo, BigDecimal horasMalEstado) {
+        try {
+            if (codigoEquipo == null || codigoEquipo.isBlank()) {
+                throw new IllegalArgumentException("Seleccione un equipo registrado.");
+            }
+            CalculadoraCarbono.validarNoNegativo("horas en mal estado", horasMalEstado);
+            BigDecimal horas = horasMalEstado.setScale(2, RoundingMode.HALF_UP);
+
+            Equipo equipo = equipoDAO.consultarPorCodigo(codigoEquipo);
+            if (equipo == null) {
+                ultimoError = "El equipo '" + codigoEquipo + "' no existe en PostgreSQL.";
+                return null;
+            }
+
+            BigDecimal factor = carbonoDAO.consultarFactorEmision();
+            CalculadoraCarbono.Resultado calculo = CalculadoraCarbono.calcular(
+                    equipo.getConsumoNormalKwh(), horas, equipo.getPorcentajeExtra(), factor);
+
+            Area area = areaDAO.consultarPorId(equipo.getIdArea());
+            String nombreArea = area == null ? "Area " + equipo.getIdArea() : area.getNombre();
+
+            RegistroCarbono registro = carbonoDAO.insertar(codigoEquipo, equipo.getNombre(),
+                    nombreArea, horas, calculo.getConsumoAdicionalKwh(),
+                    calculo.getEmisionesKgCo2(), factor);
+            conexion.commit();
+            return registro;
+        } catch (IllegalArgumentException e) {
+            ultimoError = e.getMessage();
+            return null;
+        } catch (SQLException e) { notificarErrorDeBD(e); return null; }
+    }
+
+    public BigDecimal consultarFactorEmision() throws SQLException {
+        return carbonoDAO.consultarFactorEmision();
+    }
+
+    /** Actualiza el factor de emision de la planta (kg CO2 por kWh). */
+    public boolean actualizarFactorEmision(BigDecimal factorEmision) {
+        try {
+            CalculadoraCarbono.validarNoNegativo("factor de emision", factorEmision);
+            BigDecimal factorLimpio = factorEmision.setScale(4, RoundingMode.HALF_UP);
+            carbonoDAO.actualizarFactorEmision(factorLimpio);
+            conexion.commit();
+            return true;
+        } catch (IllegalArgumentException e) {
+            ultimoError = e.getMessage();
+            return false;
+        } catch (SQLException e) { notificarErrorDeBD(e); return false; }
+    }
+
+    /**
+     * Consolida los registros almacenados en PostgreSQL: total de la planta, emisiones por
+     * area, emisiones por equipo y numero de equipos con emisiones mayores que cero.
+     * No usa valores simulados: todo proviene de registro_carbono.
+     */
+    public ResumenCarbono calcularResumenCarbono() throws SQLException {
+        List<RegistroCarbono> registros = carbonoDAO.consultarTodos();
+        BigDecimal total = BigDecimal.ZERO;
+        Map<String, BigDecimal> porArea = new LinkedHashMap<>();
+        Map<String, BigDecimal> porEquipo = new LinkedHashMap<>();
+        Set<String> equiposConEmisiones = new LinkedHashSet<>();
+
+        for (RegistroCarbono registro : registros) {
+            BigDecimal emisiones = registro.getEmisionesKgCo2();
+            total = total.add(emisiones);
+
+            String area = registro.getNombreArea() == null ? "Sin area" : registro.getNombreArea();
+            porArea.merge(area, emisiones, BigDecimal::add);
+            porEquipo.merge(registro.getCodigoEquipo(), emisiones, BigDecimal::add);
+            if (emisiones.signum() > 0) equiposConEmisiones.add(registro.getCodigoEquipo());
+        }
+
+        return new ResumenCarbono(registros, total.setScale(4, RoundingMode.HALF_UP),
+                porArea, porEquipo, equiposConEmisiones.size());
+    }
 
     // ------------------------------------------------------------------ crear orden
 
@@ -400,6 +705,54 @@ public class GestorOrdenes {
         destino.setTipo(previa.getTipo());
         destino.setDescripcion(previa.getDescripcion());
         destino.setCriterios(previa.getImpacto(), previa.getRiesgoSeguridad(), previa.isHayRespaldo());
+    }
+
+    /** Valida el codigo de un equipo (VARCHAR(30), obligatorio). */
+    private void validarCodigoEquipo(String codigo) {
+        if (codigo == null || codigo.isBlank()) {
+            throw new IllegalArgumentException("El codigo del equipo es obligatorio.");
+        }
+        if (codigo.length() > 30) {
+            throw new IllegalArgumentException(
+                    "El codigo del equipo no puede exceder 30 caracteres.");
+        }
+    }
+
+    /** Valida y normaliza el nombre de un equipo (VARCHAR(120), obligatorio). */
+    private String validarNombreEquipo(String nombre) {
+        if (nombre == null || nombre.isBlank()) {
+            throw new IllegalArgumentException("El nombre del equipo es obligatorio.");
+        }
+        String limpio = nombre.trim();
+        if (limpio.length() > 120) {
+            throw new IllegalArgumentException(
+                    "El nombre del equipo no puede exceder 120 caracteres.");
+        }
+        return limpio;
+    }
+
+    /** Valida y normaliza el nombre de un area (VARCHAR(100), obligatorio). */
+    private String validarNombreArea(String nombre) {
+        if (nombre == null || nombre.isBlank()) {
+            throw new IllegalArgumentException("El nombre del area es obligatorio.");
+        }
+        String limpio = nombre.trim();
+        if (limpio.length() > 100) {
+            throw new IllegalArgumentException(
+                    "El nombre del area no puede exceder 100 caracteres.");
+        }
+        return limpio;
+    }
+
+    /** Valida y normaliza la descripcion de un area (VARCHAR(250), opcional). */
+    private String normalizarDescripcionArea(String descripcion) {
+        if (descripcion == null) return null;
+        String limpia = descripcion.trim();
+        if (limpia.length() > 250) {
+            throw new IllegalArgumentException(
+                    "La descripcion del area no puede exceder 250 caracteres.");
+        }
+        return limpia.isEmpty() ? null : limpia;
     }
 
     /** Valida los datos de una orden con las mismas reglas CHECK de la tabla. */

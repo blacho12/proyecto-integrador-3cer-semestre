@@ -19,7 +19,6 @@ import javax.swing.JProgressBar;
 import javax.swing.JScrollPane;
 import javax.swing.JTable;
 import javax.swing.JTextField;
-import javax.swing.SwingUtilities;
 import javax.swing.border.EmptyBorder;
 import javax.swing.table.AbstractTableModel;
 
@@ -32,8 +31,9 @@ import ui.componentes.PanelTarjeta;
 import ui.componentes.Tema;
 
 /**
- * Equipos e indice AVL: la tabla y el dibujo se alimentan del AVL real, la busqueda usa
- * ArbolAVL.buscar y el registro se delega en GestorOrdenes.registrarEquipo.
+ * Equipos e indice AVL: la tabla y el dibujo se alimentan del AVL real. La busqueda usa
+ * ArbolAVL.buscar y crear, corregir o eliminar se delega en GestorOrdenes, que mantiene
+ * sincronizados PostgreSQL y el arbol.
  */
 public class PanelEquipos extends PanelBase {
 
@@ -51,11 +51,17 @@ public class PanelEquipos extends PanelBase {
     private final JButton btnBuscar = Tema.botonSecundario("Buscar");
     private final JButton btnRegistrar = Tema.botonPrimario("Insertar equipo en el AVL");
     private final JButton btnNuevaArea = Tema.botonSecundario("Nueva área");
+    private final JButton btnEliminar = Tema.botonPeligro("Eliminar equipo");
+    private final JButton btnNuevo = Tema.botonSecundario("Nuevo / limpiar");
+    private final JLabel lblSeleccion = Tema.etiquetaPequena(
+            "Nuevo equipo: complete los datos para insertarlo en el AVL.");
     private final JProgressBar progreso = Tema.barraProgreso();
 
     private final Map<Integer, String> nombresArea = new HashMap<>();
     private List<Area> areas = new ArrayList<>();
-    private boolean registrandoEquipo;
+    private String codigoOriginal;
+    private OperacionEquipo operacionEquipo = OperacionEquipo.NINGUNA;
+    private boolean limpiandoSeleccion;
 
     public PanelEquipos(GestorOrdenes gestor, ContextoApp contexto) {
         super(gestor, contexto);
@@ -63,7 +69,7 @@ public class PanelEquipos extends PanelBase {
 
         setLayout(new BorderLayout(0, 14));
         add(Tema.cabeceraVista("Equipos e índice AVL",
-                "Búsqueda O(log n), inserción autobalanceada y recorrido inorden del árbol real.",
+                "Búsqueda O(log n), inserción, corrección y eliminación autobalanceadas del árbol real.",
                 progreso), BorderLayout.NORTH);
 
         JPanel contenido = new JPanel(new BorderLayout(0, 14));
@@ -149,9 +155,9 @@ public class PanelEquipos extends PanelBase {
         tarjeta.setLayout(new BorderLayout(0, 10));
         tarjeta.setPreferredSize(new Dimension(348, 360));
 
-        JLabel titulo = Tema.encabezadoSeccion("Registrar nuevo equipo");
+        JLabel titulo = Tema.encabezadoSeccion("Registrar o corregir equipo");
         JLabel subtitulo = Tema.etiquetaPequena(
-                "Se inserta en PostgreSQL y luego en el AVL con las rotaciones necesarias.");
+                "Seleccione una fila para editarla; al guardar se actualizan PostgreSQL y el AVL.");
 
         JPanel cabecera = new JPanel();
         cabecera.setOpaque(false);
@@ -183,13 +189,17 @@ public class PanelEquipos extends PanelBase {
         envoltorioBoton.add(btnNuevaArea, BorderLayout.NORTH);
         filaArea.add(envoltorioBoton, BorderLayout.EAST);
         formulario.add(filaArea);
-        formulario.add(Box.createVerticalStrut(16));
+        formulario.add(Box.createVerticalStrut(10));
+        lblSeleccion.setAlignmentX(LEFT_ALIGNMENT);
+        formulario.add(lblSeleccion);
+        formulario.add(Box.createVerticalStrut(10));
         btnRegistrar.setAlignmentX(LEFT_ALIGNMENT);
         formulario.add(btnRegistrar);
         formulario.add(Box.createVerticalStrut(8));
 
-        JLabel nota = Tema.etiquetaPequena(
-                "El código se guarda en mayúsculas. Si ya existe, PostgreSQL rechaza el registro.");
+        JLabel nota = Tema.etiquetaPequena("<html><body style='width:300px'>"
+                + "El código se guarda en mayúsculas. Solo puede cambiarse si el equipo aún no "
+                + "tiene órdenes ni registros de carbono.</body></html>");
         nota.setAlignmentX(LEFT_ALIGNMENT);
         formulario.add(nota);
 
@@ -201,13 +211,25 @@ public class PanelEquipos extends PanelBase {
     private PanelTarjeta construirTablaEquipos() {
         PanelTarjeta tarjeta = new PanelTarjeta();
         tarjeta.setLayout(new BorderLayout(0, 10));
-        tarjeta.setPreferredSize(new Dimension(100, 220));
+        tarjeta.setPreferredSize(new Dimension(100, 250));
 
-        JPanel cabecera = new JPanel(new BorderLayout());
+        JPanel textos = new JPanel();
+        textos.setOpaque(false);
+        textos.setLayout(new BoxLayout(textos, BoxLayout.Y_AXIS));
+        textos.add(Tema.encabezadoSeccion("Catálogo de equipos (recorrido inorden)"));
+        textos.add(Box.createVerticalStrut(2));
+        textos.add(Tema.etiquetaPequena(
+                "Seleccione una fila para corregirla; el AVL se actualiza al guardar."));
+
+        JPanel acciones = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        acciones.setOpaque(false);
+        acciones.add(btnNuevo);
+        acciones.add(btnEliminar);
+
+        JPanel cabecera = new JPanel(new BorderLayout(12, 0));
         cabecera.setOpaque(false);
-        cabecera.add(Tema.encabezadoSeccion("Catálogo de equipos (recorrido inorden)"), BorderLayout.WEST);
-        JLabel pista = Tema.etiquetaPequena("Orden ascendente por código dentro del AVL.");
-        cabecera.add(pista, BorderLayout.EAST);
+        cabecera.add(textos, BorderLayout.WEST);
+        cabecera.add(acciones, BorderLayout.EAST);
 
         JScrollPane scroll = Tema.scroll(tabla);
         tarjeta.add(cabecera, BorderLayout.NORTH);
@@ -226,10 +248,15 @@ public class PanelEquipos extends PanelBase {
     }
 
     private void configurarEventos() {
+        tabla.getSelectionModel().addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting() && !limpiandoSeleccion) cargarSeleccion();
+        });
         btnBuscar.addActionListener(e -> buscarEquipo());
         txtBuscar.addActionListener(e -> buscarEquipo());
-        btnRegistrar.addActionListener(e -> registrarEquipo());
+        btnRegistrar.addActionListener(e -> guardarEquipo());
         btnNuevaArea.addActionListener(e -> registrarArea());
+        btnEliminar.addActionListener(e -> eliminarEquipo());
+        btnNuevo.addActionListener(e -> limpiarFormulario());
         actualizarBotones();
     }
 
@@ -267,6 +294,39 @@ public class PanelEquipos extends PanelBase {
         btnRegistrar.setEnabled(libre && !areas.isEmpty());
         btnNuevaArea.setEnabled(libre);
         btnBuscar.setEnabled(libre);
+        btnEliminar.setEnabled(libre && codigoOriginal != null);
+        btnNuevo.setEnabled(libre);
+    }
+
+    /** Carga en el formulario el equipo seleccionado y activa el modo edición. */
+    private void cargarSeleccion() {
+        int fila = tabla.getSelectedRow();
+        if (fila < 0 || fila >= modelo.getRowCount()) {
+            if (codigoOriginal != null) limpiarFormulario();
+            return;
+        }
+        Equipo equipo = modelo.getEquipo(fila);
+        if (equipo == null) return;
+
+        codigoOriginal = equipo.getCodigo();
+        txtCodigo.setText(equipo.getCodigo());
+        txtNombre.setText(equipo.getNombre());
+        seleccionarArea(equipo.getIdArea());
+        lblSeleccion.setText("Editando " + equipo.getCodigo()
+                + ". Corrija los campos y pulse Guardar cambios.");
+        lblSeleccion.setForeground(Tema.CIAN);
+        btnRegistrar.setText("Guardar cambios");
+        actualizarBotones();
+    }
+
+    private void seleccionarArea(int idArea) {
+        for (int i = 0; i < cmbArea.getItemCount(); i++) {
+            Area area = cmbArea.getItemAt(i);
+            if (area != null && area.getIdArea() == idArea) {
+                cmbArea.setSelectedIndex(i);
+                return;
+            }
+        }
     }
 
     private void buscarEquipo() {
@@ -299,7 +359,7 @@ public class PanelEquipos extends PanelBase {
                 ContextoApp.Nivel.INFO);
     }
 
-    private void registrarEquipo() {
+    private void guardarEquipo() {
         if (estaOcupado()) return;
         String codigo = txtCodigo.getText() == null ? "" : txtCodigo.getText().trim().toUpperCase();
         String nombre = txtNombre.getText() == null ? "" : txtNombre.getText().trim();
@@ -307,6 +367,7 @@ public class PanelEquipos extends PanelBase {
 
         if (codigo.isEmpty()) {
             aviso("El código del equipo es obligatorio.");
+            txtCodigo.requestFocusInWindow();
             return;
         }
         if (codigo.length() > 30) {
@@ -315,6 +376,7 @@ public class PanelEquipos extends PanelBase {
         }
         if (nombre.isEmpty()) {
             aviso("El nombre del equipo es obligatorio.");
+            txtNombre.requestFocusInWindow();
             return;
         }
         if (nombre.length() > 120) {
@@ -326,10 +388,57 @@ public class PanelEquipos extends PanelBase {
             return;
         }
 
-        registrandoEquipo = true;
-        ejecutarOperacion(() -> gestor.registrarEquipo(
-                        new Equipo(codigo, nombre, area.getIdArea())),
-                "Equipo " + codigo + " insertado en PostgreSQL y en el índice AVL.");
+        operacionEquipo = OperacionEquipo.GUARDAR;
+        if (codigoOriginal == null) {
+            ejecutarOperacion(() -> gestor.registrarEquipo(
+                            new Equipo(codigo, nombre, area.getIdArea())),
+                    "Equipo " + codigo + " insertado en PostgreSQL y en el índice AVL.");
+        } else {
+            final String original = codigoOriginal;
+            ejecutarOperacion(() -> gestor.modificarEquipo(original, codigo, nombre, area.getIdArea()),
+                    "Equipo " + codigo + " actualizado en PostgreSQL y en el índice AVL.");
+        }
+    }
+
+    private void eliminarEquipo() {
+        if (estaOcupado()) return;
+        if (codigoOriginal == null) {
+            aviso("Seleccione el equipo que desea eliminar.");
+            return;
+        }
+
+        Equipo equipo = gestor.getEquipos().buscar(codigoOriginal);
+        String nombre = equipo == null ? codigoOriginal : equipo.getNombre();
+        int respuesta = JOptionPane.showConfirmDialog(this,
+                "¿Eliminar definitivamente el equipo «" + nombre + "» (" + codigoOriginal + ")?\n\n"
+                        + "Solo se permite si no tiene órdenes ni registros de carbono. "
+                        + "No hay borrado en cascada y esta acción no se puede deshacer.",
+                "Confirmar eliminación", JOptionPane.YES_NO_OPTION,
+                JOptionPane.WARNING_MESSAGE);
+        if (respuesta != JOptionPane.YES_OPTION) return;
+
+        final String codigo = codigoOriginal;
+        operacionEquipo = OperacionEquipo.ELIMINAR;
+        ejecutarOperacion(() -> gestor.eliminarEquipo(codigo),
+                "Equipo " + codigo + " eliminado de PostgreSQL y del índice AVL.");
+    }
+
+    private void limpiarFormulario() {
+        if (limpiandoSeleccion) return;
+        limpiandoSeleccion = true;
+        try {
+            codigoOriginal = null;
+            txtCodigo.setText("");
+            txtNombre.setText("");
+            if (cmbArea.getItemCount() > 0) cmbArea.setSelectedIndex(0);
+            lblSeleccion.setText("Nuevo equipo: complete los datos para insertarlo en el AVL.");
+            lblSeleccion.setForeground(Tema.TEXTO_SEC);
+            btnRegistrar.setText("Insertar equipo en el AVL");
+            tabla.clearSelection();
+        } finally {
+            limpiandoSeleccion = false;
+        }
+        actualizarBotones();
     }
 
     private void registrarArea() {
@@ -357,7 +466,7 @@ public class PanelEquipos extends PanelBase {
             return;
         }
 
-        registrandoEquipo = false;
+        operacionEquipo = OperacionEquipo.NINGUNA;
         final String nombreFinal = nombre;
         final String descripcionFinal = descripcion.isEmpty() ? null : descripcion;
         ejecutarOperacion(() -> gestor.registrarArea(nombreFinal, descripcionFinal),
@@ -376,21 +485,19 @@ public class PanelEquipos extends PanelBase {
 
     @Override
     protected void alOperacionExitosa(Object valor) {
-        if (registrandoEquipo) {
-            txtCodigo.setText("");
-            txtNombre.setText("");
+        if (operacionEquipo != OperacionEquipo.NINGUNA) {
+            operacionEquipo = OperacionEquipo.NINGUNA;
+            limpiarFormulario();
             txtCodigo.requestFocusInWindow();
-            SwingUtilities.invokeLater(() -> {
-                if (cmbArea.getItemCount() > 0) cmbArea.setSelectedIndex(0);
-            });
         }
-        registrandoEquipo = false;
     }
 
     @Override
     protected void alErrorOperacion() {
-        registrandoEquipo = false;
+        operacionEquipo = OperacionEquipo.NINGUNA;
     }
+
+    private enum OperacionEquipo { NINGUNA, GUARDAR, ELIMINAR }
 
     /** Modelo de la tabla de equipos; el orden proviene del recorrido inorden del AVL. */
     private static class ModeloEquipos extends AbstractTableModel {
