@@ -76,7 +76,8 @@ Petición HTTP (JSON)
     │       └── excepciones/
     └── resources/
         ├── application.properties
-        └── esquema.sql
+        ├── esquema.sql
+        └── esquema_carbono.sql
 ```
 
 ### Qué se eliminó y por qué
@@ -108,6 +109,7 @@ Petición HTTP (JSON)
 - JDK 21
 - Maven 3.9+ (opcional: el proyecto incluye Maven Wrapper y puede compilar sin Maven global)
 - PostgreSQL con el esquema de `src/main/resources/esquema.sql` aplicado (local o Aiven)
+- Para habilitar huella de carbono, aplicar también `src/main/resources/esquema_carbono.sql`
 - Docker (opcional, para probar la imagen o desplegar en Render)
 
 ### Base de datos
@@ -120,6 +122,16 @@ psql "postgresql://USUARIO:CLAVE@HOST:PUERTO/BASE?sslmode=require" \
 ```
 
 Si la base en la nube es Aiven, copie el host, puerto, base y usuario desde la consola de Aiven y agregue `?sslmode=require` a la URL JDBC.
+
+La migración `esquema_carbono.sql` agrega los parámetros energéticos por equipo,
+configura el factor inicial documentado en la versión Swing (`0.1500 kg CO₂/kWh`) y crea
+el historial persistente. Aplíquela una sola vez (es idempotente) antes de desplegar esta
+versión del backend; la aplicación no ejecuta migraciones automáticamente:
+
+```bash
+psql "postgresql://HOST:PUERTO/BASE?sslmode=require" \
+     -f src/main/resources/esquema_carbono.sql
+```
 
 ---
 
@@ -213,9 +225,11 @@ El contenedor escucha en el puerto indicado por `PORT` o, si no existe, en `8080
    - `DB_USER` → usuario de la base
    - `DB_PASSWORD` → contraseña de la base
    - `DB_POOL_SIZE` (opcional) → por ejemplo `5`
+   - `CORS_ALLOWED_ORIGINS` → origen del frontend, por ejemplo `https://mi-frontend.onrender.com`; puede agregar más orígenes separados por comas. Para desarrollo local use `http://localhost:5500`.
    - **No defina `PORT`**: Render lo inyecta automáticamente y la aplicación lo toma con `${PORT:8080}`.
-5. En **Health Check Path** configure `/api/estado`.
-6. Despliegue. El `Dockerfile` compila con Maven y JDK 21 y ejecuta el JAR con un JRE 21 sin privilegios de root.
+5. Antes del primer despliegue que incluya carbono, aplique `esquema_carbono.sql` a la base de datos de Render/Aiven (ver sección 2). Sin esa migración, la API no está lista y las consultas de equipos fallarán explícitamente.
+6. En **Health Check Path** configure `/api/estado`.
+7. Despliegue. El `Dockerfile` compila con Maven y JDK 21 y ejecuta el JAR con un JRE 21 sin privilegios de root.
 
 La imagen no incluye el archivo `.env`; las credenciales llegan como variables de entorno del servicio, tal como exige la configuración segura.
 
@@ -368,7 +382,37 @@ Ejemplo:
 }
 ```
 
-### 5.5 Estado del servicio — `/api/estado`
+### 5.5 Huella de carbono — `/api/carbono`
+
+La estimación replica el cálculo de la versión Swing: `consumo adicional (kWh) =
+consumo normal (kWh/h) × horas en mal estado × porcentaje extra / 100`; `emisiones
+(kg CO₂) = consumo adicional × factor (kg CO₂/kWh)`. Los resultados se redondean a
+cuatro decimales (`HALF_UP`). Los valores negativos y porcentajes superiores a 100 se
+rechazan. El factor configurado inicialmente por la migración es el valor definido en la
+versión original; se puede cambiar desde la API. Cada registro conserva el factor usado.
+
+| Método | Ruta | Devuelve | Códigos |
+|---|---|---|---|
+| `GET` | `/api/carbono/resumen` | Total, equipos con emisiones, conteos, agrupaciones por área/equipo e historial persistido | `200` |
+| `GET` | `/api/carbono/registros` | Historial completo, más reciente primero | `200` |
+| `POST` | `/api/carbono/registros` | Calcula y persiste un registro | `201`, `400`, `404` |
+| `GET` | `/api/carbono/configuracion` | Factor de emisión vigente | `200` |
+| `PUT` | `/api/carbono/configuracion` | Actualiza el factor de la planta | `200`, `400` |
+| `PUT` | `/api/carbono/equipos/{codigo}/parametros` | Actualiza consumo normal y porcentaje extra del equipo | `200`, `400`, `404` |
+
+Ejemplos de cuerpos:
+
+```json
+{"codigoEquipo":"EQ-001","horasMalEstado":8}
+{"consumoNormalKwh":10.00,"porcentajeExtra":15.00}
+{"factorEmision":0.1500}
+```
+
+`GET /api/equipos` incluye `consumoNormalKwh` y `porcentajeExtra`. El resumen se calcula
+desde los registros guardados, no desde datos de muestra; las agrupaciones vacías se
+devuelven como listas vacías y el total como cero.
+
+### 5.6 Estado del servicio — `/api/estado`
 
 | Método | Ruta | Devuelve | Códigos |
 |---|---|---|---|
@@ -376,7 +420,7 @@ Ejemplo:
 
 Se usa como **Health Check** en Render.
 
-### 5.6 Códigos de error
+### 5.7 Códigos de error
 
 | Código | Cuándo ocurre |
 |---|---|
@@ -394,7 +438,7 @@ Se usa como **Health Check** en Render.
 ./mvnw clean package
 ```
 
-El proyecto no incluye pruebas automatizadas con JUnit; la verificación principal es la compilación y las pruebas manuales contra la base de datos:
+Las pruebas unitarias y de contrato HTTP corren con Maven. La persistencia requiere PostgreSQL y la migración aplicada:
 
 ```bash
 curl http://localhost:8080/api/estado
@@ -403,7 +447,11 @@ curl http://localhost:8080/api/equipos
 curl http://localhost:8080/api/ordenes
 curl http://localhost:8080/api/ordenes/cola
 curl http://localhost:8080/api/estadisticas
+curl http://localhost:8080/api/carbono/resumen
 ```
+
+Las pruebas JUnit de carbono (`CalculadoraCarbonoTest`, `CarbonoControllerTest`) corren
+con `./mvnw test`. La persistencia requiere PostgreSQL y la migración aplicada.
 
 ---
 
@@ -411,5 +459,5 @@ curl http://localhost:8080/api/estadisticas
 
 - No escriba credenciales en `application.properties`, en el código ni en `Dockerfile`.
 - Mantenga `.env` fuera del control de versiones (ya está en `.gitignore`).
-- En Render, cargue `DB_URL`, `DB_USER` y `DB_PASSWORD` en **Environment**.
+- En Render, cargue `DB_URL`, `DB_USER`, `DB_PASSWORD` y `CORS_ALLOWED_ORIGINS` en **Environment**.
 - Use siempre `?sslmode=require` cuando la base esté fuera de la red local.

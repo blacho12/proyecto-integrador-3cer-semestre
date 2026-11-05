@@ -118,4 +118,16 @@ export const api = {
     },
 
     estadisticas: () => request('/estadisticas'),
+
+    carbono: {
+        resumen: () => request('/carbono/resumen'),
+        registros: () => request('/carbono/registros'),
+        registrar: (data) => request('/carbono/registros', { method: 'POST', body: data }),
+        configuracion: () => request('/carbono/configuracion'),
+        actualizarFactor: (data) => request('/carbono/configuracion', { method: 'PUT', body: data }),
+        actualizarParametrosEquipo: (codigo, data) => request(
+            `/carbono/equipos/${encodeURIComponent(codigo)}/parametros`,
+            { method: 'PUT', body: data },
+        ),
+    },
 };
