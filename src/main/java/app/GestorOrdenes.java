@@ -117,15 +117,71 @@ public class GestorOrdenes {
         } catch (SQLException e) { notificarErrorDeBD(e); return null; }
     }
 
-    /** Elimina un equipo de la BD y del AVL; la BD rechaza si tiene ordenes asociadas. */
-    public boolean eliminarEquipo(String codigo) {
-        Equipo e = equipos.buscar(codigo);
-        if (e == null) {
+    /**
+     * Actualiza nombre y area de un equipo en PostgreSQL y en el AVL. El codigo es la clave
+     * primaria y no cambia. Devuelve false si el equipo no existe o la BD rechaza el cambio.
+     */
+    public boolean modificarEquipo(String codigo, String nombre, int idArea) {
+        if (equipos.buscar(codigo) == null) {
             ultimoError = "El equipo '" + codigo + "' no existe en el indice AVL.";
+            System.err.println(ultimoError);
             return false;
         }
         try {
-            if (!equipoDAO.eliminar(codigo)) return false;
+            if (!equipoDAO.actualizar(new Equipo(codigo, nombre, idArea))) {
+                ultimoError = "El equipo '" + codigo + "' ya no existe en PostgreSQL.";
+                System.err.println(ultimoError);
+                revertir();
+                return false;
+            }
+            equipos.modificar(codigo, nombre, idArea);   // memoria sincronizada con la BD
+            conexion.commit();
+            return true;
+        } catch (SQLException e) { notificarErrorDeBD(e); return false; }
+    }
+
+    /** Cantidad de ordenes (de cualquier estado) que referencian a un equipo. */
+    public int contarOrdenesDeEquipo(String codigo) throws SQLException {
+        return ordenDAO.consultarPorEquipo(codigo).size();
+    }
+
+    /**
+     * Elimina un equipo de la BD y del AVL. La clave foranea de orden_mantenimiento usa
+     * ON DELETE RESTRICT, asi que si el equipo tiene ordenes solo se borra cuando
+     * eliminarOrdenes es true; en ese caso las ordenes se borran junto con el equipo.
+     */
+    public boolean eliminarEquipo(String codigo, boolean eliminarOrdenes) {
+        Equipo e = equipos.buscar(codigo);
+        if (e == null) {
+            ultimoError = "El equipo '" + codigo + "' no existe en el indice AVL.";
+            System.err.println(ultimoError);
+            return false;
+        }
+        try {
+            List<OrdenMantenimiento> asociadas = ordenDAO.consultarPorEquipo(codigo);
+            if (!asociadas.isEmpty() && !eliminarOrdenes) {
+                ultimoError = "El equipo '" + codigo + "' tiene " + asociadas.size()
+                        + (asociadas.size() == 1 ? " orden asociada" : " ordenes asociadas")
+                        + "; PostgreSQL no permite borrarlo (ON DELETE RESTRICT). "
+                        + "Confirme el borrado para eliminar tambien esas ordenes.";
+                System.err.println(ultimoError);
+                return false;
+            }
+            for (OrdenMantenimiento o : asociadas) {
+                if (!ordenDAO.eliminar(o.getId())) {
+                    ultimoError = "La orden OM-" + o.getId() + " ya no existe en PostgreSQL.";
+                    System.err.println(ultimoError);
+                    revertir();
+                    return false;
+                }
+                ordenes.eliminarPorId(o.getId());        // fuera de la cola de prioridad
+            }
+            if (!equipoDAO.eliminar(codigo)) {
+                ultimoError = "El equipo '" + codigo + "' ya no existe en PostgreSQL.";
+                System.err.println(ultimoError);
+                revertir();
+                return false;
+            }
             equipos.eliminar(codigo);
             conexion.commit();
             return true;
