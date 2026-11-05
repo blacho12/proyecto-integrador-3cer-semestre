@@ -31,7 +31,8 @@ public class EquipoDAO {
 
     public List<Equipo> consultarTodos() throws SQLException {
         List<Equipo> equipos = new ArrayList<>();
-        String sql = "SELECT codigo, nombre, id_area FROM equipo ORDER BY codigo";
+        String sql = "SELECT codigo, nombre, id_area, consumo_normal_kwh, porcentaje_extra "
+                   + "FROM equipo ORDER BY codigo";
         try (PreparedStatement ps = conexion.prepareStatement(sql);
              ResultSet rs = ps.executeQuery()) {
             while (rs.next()) equipos.add(mapear(rs));
@@ -41,7 +42,8 @@ public class EquipoDAO {
 
     /** Devuelve el equipo con ese codigo o null si no existe. */
     public Equipo consultarPorCodigo(String codigo) throws SQLException {
-        String sql = "SELECT codigo, nombre, id_area FROM equipo WHERE codigo = ?";
+        String sql = "SELECT codigo, nombre, id_area, consumo_normal_kwh, porcentaje_extra "
+                   + "FROM equipo WHERE codigo = ?";
         try (PreparedStatement ps = conexion.prepareStatement(sql)) {
             ps.setString(1, codigo);
             try (ResultSet rs = ps.executeQuery()) {
@@ -61,6 +63,18 @@ public class EquipoDAO {
         }
     }
 
+    /** Actualiza exclusivamente los parametros energeticos del equipo. */
+    public boolean actualizarParametrosCarbono(String codigo, java.math.BigDecimal consumoNormalKwh,
+                                                java.math.BigDecimal porcentajeExtra) throws SQLException {
+        String sql = "UPDATE equipo SET consumo_normal_kwh = ?, porcentaje_extra = ? WHERE codigo = ?";
+        try (PreparedStatement ps = conexion.prepareStatement(sql)) {
+            ps.setBigDecimal(1, consumoNormalKwh);
+            ps.setBigDecimal(2, porcentajeExtra);
+            ps.setString(3, codigo);
+            return ps.executeUpdate() > 0;
+        }
+    }
+
     /** Elimina un equipo. PostgreSQL rechaza (23503) si tiene ordenes asociadas (ON DELETE RESTRICT). */
     public boolean eliminar(String codigo) throws SQLException {
         String sql = "DELETE FROM equipo WHERE codigo = ?";
@@ -71,6 +85,7 @@ public class EquipoDAO {
     }
 
     private Equipo mapear(ResultSet rs) throws SQLException {
-        return new Equipo(rs.getString("codigo"), rs.getString("nombre"), rs.getInt("id_area"));
+        return new Equipo(rs.getString("codigo"), rs.getString("nombre"), rs.getInt("id_area"),
+                rs.getBigDecimal("consumo_normal_kwh"), rs.getBigDecimal("porcentaje_extra"));
     }
 }

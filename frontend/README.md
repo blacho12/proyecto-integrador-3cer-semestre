@@ -89,7 +89,7 @@ de destruir la vista anterior y cerrar modales al navegar.
 | Gestión de áreas | `#/areas` | CRUD con conteo de equipos asociados |
 | Historial de acciones | `#/historial` | Ver la pila LIFO y deshacer la última acción |
 | Indicadores y estadísticas | `#/estadisticas` | Tarjetas y distribuciones reales de la API |
-| Huella de carbono | `#/carbono` | Módulo informativo: la API actual no expone endpoints |
+| Huella de carbono | `#/carbono` | Parámetros de equipo, factor de planta, cálculo e historial de emisiones persistidos |
 
 ## 6. Endpoints usados
 
@@ -116,7 +116,20 @@ POST   /api/ordenes/atender-siguiente
 POST   /api/ordenes/historial/deshacer
 
 GET    /api/estadisticas
+
+GET    /api/carbono/resumen
+GET    /api/carbono/registros
+POST   /api/carbono/registros
+GET    /api/carbono/configuracion
+PUT    /api/carbono/configuracion
+PUT    /api/carbono/equipos/{codigo}/parametros
 ```
+
+El resumen agrega el historial persistido. Para usar carbono, aplique primero
+`src/main/resources/esquema_carbono.sql` a la misma base PostgreSQL del backend. La API
+calcula consumo adicional como `consumo normal × horas en mal estado × porcentaje extra /
+100` y emisiones como `consumo adicional × factor de emisión`; conserva el factor usado
+en cada registro y rechaza valores negativos o porcentajes mayores que 100.
 
 ## 7. Decisiones de negocio conservadas
 
@@ -137,8 +150,9 @@ GET    /api/estadisticas
 - **CORS en producción:** hasta que se redespliegue el backend con `WebConfig`, la API
   desplegada responde `403 Invalid CORS request` a peticiones del navegador desde otro
   origen. Las pruebas de lectura con `curl` sí funcionan.
-- **Huella de carbono:** no existe un controlador REST equivalente en
-  `migracion-springboot`; no se simulan datos.
+- **Huella de carbono:** requiere que el backend con `CarbonoController` esté desplegado
+  y que `esquema_carbono.sql` se haya aplicado. Si falta la configuración de base de
+  datos, el módulo muestra el error de API y no simula resultados.
 - **Árbol AVL:** la API devuelve el recorrido inorden y la altura, no la forma interna del
   árbol. La vista muestra el índice ordenado y las métricas reales, sin dibujar nodos
   inventados.
