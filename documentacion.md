@@ -106,7 +106,7 @@ Petición HTTP (JSON)
 ## 2. Requisitos
 
 - JDK 21
-- Maven 3.9+
+- Maven 3.9+ (opcional: el proyecto incluye Maven Wrapper y puede compilar sin Maven global)
 - PostgreSQL con el esquema de `src/main/resources/esquema.sql` aplicado (local o Aiven)
 - Docker (opcional, para probar la imagen o desplegar en Render)
 
@@ -154,16 +154,29 @@ spring.config.import=optional:file:./.env[.properties]
 
 ### 3.2 Arrancar
 
+El repositorio incluye **Maven Wrapper**, así que no es necesario instalar Maven globalmente.
+
+En Linux o macOS:
+
 ```bash
-mvn clean package
+./mvnw clean package
 java -jar target/gestor-mantenimiento-1.0.0.jar
 ```
 
-o directamente:
+En Windows:
+
+```bat
+mvnw.cmd clean package
+java -jar target\gestor-mantenimiento-1.0.0.jar
+```
+
+También puede arrancar directamente en modo desarrollo:
 
 ```bash
-mvn spring-boot:run
+./mvnw spring-boot:run
 ```
+
+Si ya tiene Maven instalado, los comandos `mvn` equivalentes siguen funcionando.
 
 La API queda en `http://localhost:8080`. Verifique la conexión con:
 
@@ -378,7 +391,7 @@ Se usa como **Health Check** en Render.
 ## 6. Verificación
 
 ```bash
-mvn clean package
+./mvnw clean package
 ```
 
 El proyecto no incluye pruebas automatizadas con JUnit; la verificación principal es la compilación y las pruebas manuales contra la base de datos:
