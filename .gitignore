@@ -11,4 +11,4 @@ target/
 # Archivos temporales de Java
 *.class
 
-.sh
+sesion_menu_demo.sh
