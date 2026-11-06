@@ -2,8 +2,13 @@ package com.grupo7.sgmi.services;
 
 import java.util.List;
 
+import org.springframework.boot.ApplicationArguments;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import datos.AccionDAO;
 import datos.EquipoDAO;
 import datos.OrdenDAO;
 import estructuras.ArbolAVL;
@@ -13,68 +18,54 @@ import modelo.Equipo;
 import modelo.OrdenMantenimiento;
 import modelo.OrdenMantenimiento.Estado;
 
-/**
- * Mantiene las estructuras academicas vivas durante la ejecucion del servidor:
- * el AVL indexa los equipos, la cola de prioridad solo las ordenes PENDIENTE y
- * la pila guarda las acciones para deshacer.
- *
- * PostgreSQL sigue siendo la fuente de verdad. Las estructuras se cargan desde la
- * base en la primera operacion (carga perezosa) y se mantienen sincronizadas en
- * cada alta, modificacion, cierre, cancelacion o borrado realizado por la API.
- *
- * Concurrencia: los servicios acceden a este objeto dentro de synchronized (estado),
- * porque la API atiende peticiones en varios hilos y las estructuras no son thread-safe.
- * La pila es temporal: vive solo mientras el proceso esta en ejecucion.
- */
+/** Estructuras académicas en memoria, reconstruidas desde PostgreSQL al primer uso. */
 @Component
-public class EstadoEnMemoria {
+public class EstadoEnMemoria implements ApplicationRunner {
 
     private final EjecutorBD ejecutor;
+    private final ObjectMapper objectMapper;
     private final ArbolAVL equipos = new ArbolAVL();
     private final ColaPrioridad ordenesPendientes = new ColaPrioridad();
     private final PilaAcciones historial = new PilaAcciones();
 
     private boolean cargado;
 
-    public EstadoEnMemoria(EjecutorBD ejecutor) {
+    public EstadoEnMemoria(EjecutorBD ejecutor, ObjectMapper objectMapper) {
         this.ejecutor = ejecutor;
+        this.objectMapper = objectMapper;
     }
 
-    /** Carga el AVL y la cola desde PostgreSQL una sola vez, en la primera operacion. */
     public synchronized void asegurarCargado() {
-        if (cargado) {
-            return;
-        }
+        if (cargado) return;
         CargaBD carga = ejecutor.enLectura(conexion -> new CargaBD(
                 new EquipoDAO(conexion).consultarTodos(),
-                new OrdenDAO(conexion).consultarPorEstado(Estado.PENDIENTE)));
+                new OrdenDAO(conexion).consultarPorEstado(Estado.PENDIENTE),
+                new AccionDAO(conexion, objectMapper).consultarActivas()));
 
-        for (Equipo equipo : carga.equipos()) {
-            if (equipos.buscar(equipo.getCodigo()) == null) {
-                equipos.insertar(equipo);
-            }
-        }
-        for (OrdenMantenimiento orden : carga.ordenesPendientes()) {
-            if (ordenesPendientes.buscarPorId(orden.getId()) == null) {
-                ordenesPendientes.encolar(orden);
-            }
-        }
+        equipos.limpiar();
+        ordenesPendientes.limpiar();
+        historial.limpiar();
+        for (Equipo equipo : carga.equipos()) equipos.insertar(equipo);
+        for (OrdenMantenimiento orden : carga.ordenesPendientes()) ordenesPendientes.encolar(orden);
+        for (estructuras.Accion accion : carga.acciones()) historial.apilar(accion);
         cargado = true;
     }
 
-    public ArbolAVL getEquipos() {
-        return equipos;
+    @Override
+    public void run(ApplicationArguments args) {
+        asegurarCargado();
     }
 
-    public ColaPrioridad getOrdenesPendientes() {
-        return ordenesPendientes;
+    public synchronized void recargar() {
+        cargado = false;
+        asegurarCargado();
     }
 
-    public PilaAcciones getHistorial() {
-        return historial;
-    }
+    public ArbolAVL getEquipos() { return equipos; }
+    public ColaPrioridad getOrdenesPendientes() { return ordenesPendientes; }
+    public PilaAcciones getHistorial() { return historial; }
 
-    /** Resultado de las dos consultas iniciales. */
-    private record CargaBD(List<Equipo> equipos, List<OrdenMantenimiento> ordenesPendientes) {
+    private record CargaBD(List<Equipo> equipos, List<OrdenMantenimiento> ordenesPendientes,
+                           List<estructuras.Accion> acciones) {
     }
 }

@@ -132,7 +132,7 @@ function render(stats, queue) {
                         </div>
                         <p class="small text-secondary mt-3 mb-0">
                             <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
-                            La pila es temporal y vive en la memoria del proceso del backend.
+                            La pila y sus snapshots persisten en PostgreSQL tras reiniciar el backend.
                         </p>
                     </div>
                 </section>

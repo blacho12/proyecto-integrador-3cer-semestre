@@ -3,6 +3,7 @@ package com.grupo7.sgmi.controllers;
 import java.util.List;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -10,7 +11,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -43,9 +43,10 @@ public class EquipoController {
     }
 
     @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    public Equipo crear(@Valid @RequestBody EquipoRequest peticion) {
-        return service.crear(peticion);
+    public ResponseEntity<Equipo> crear(@Valid @RequestBody EquipoRequest peticion) {
+        EquipoService.ResultadoCreacion resultado = service.crear(peticion);
+        HttpStatus status = resultado.reactivado() ? HttpStatus.OK : HttpStatus.CREATED;
+        return ResponseEntity.status(status).body(resultado.equipo());
     }
 
     @PutMapping("/{codigo}")
@@ -56,8 +57,7 @@ public class EquipoController {
 
     @DeleteMapping("/{codigo}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void eliminar(@PathVariable String codigo,
-                         @RequestParam(defaultValue = "false") boolean eliminarOrdenes) {
-        service.eliminar(codigo, eliminarOrdenes);
+    public void eliminar(@PathVariable String codigo) {
+        service.eliminar(codigo);
     }
 }

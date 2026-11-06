@@ -100,8 +100,7 @@ export const api = {
         obtener: (codigo) => request(`/equipos/${encodeURIComponent(codigo)}`),
         crear: (data) => request('/equipos', { method: 'POST', body: data }),
         actualizar: (codigo, data) => request(`/equipos/${encodeURIComponent(codigo)}`, { method: 'PUT', body: data }),
-        // No se usa eliminarOrdenes=true: el frontend conserva el historial.
-        eliminar: (codigo) => request(`/equipos/${encodeURIComponent(codigo)}?eliminarOrdenes=false`, { method: 'DELETE' }),
+        eliminar: (codigo) => request(`/equipos/${encodeURIComponent(codigo)}`, { method: 'DELETE' }),
     },
 
     ordenes: {

@@ -19,14 +19,18 @@ function render(actions) {
     const rows = actions.length
         ? actions.map((action, index) => {
             const previous = action.estadoPrevio || null;
+            const equipo = action.equipoPrevio || null;
+            const isEquipmentRetirement = action.tipo === 'BAJA_EQUIPO';
             return `
                 <tr class="${index === 0 ? 'top-row' : ''}">
                     <td class="mono ${index === 0 ? 'text-warning' : 'text-secondary'}">${index === 0 ? '1 · TOPE' : index + 1}</td>
                     <td>${actionBadge(action.tipo)}</td>
-                    <td class="mono">OM-${escapeHtml(action.idOrden)}</td>
-                    <td class="mono text-code">${escapeHtml(previous?.codigoEquipo || '—')}</td>
-                    <td>${escapeHtml(previous?.estado || '—')}</td>
-                    <td class="description-cell">${escapeHtml(previous?.descripcion || '—')}</td>
+                    <td class="mono">${isEquipmentRetirement ? '—' : `OM-${escapeHtml(action.idOrden)}`}</td>
+                    <td class="mono text-code">${escapeHtml(previous?.codigoEquipo || equipo?.codigo || '—')}</td>
+                    <td>${isEquipmentRetirement ? 'ACTIVO' : escapeHtml(previous?.estado || '—')}</td>
+                    <td class="description-cell">${isEquipmentRetirement
+                        ? `${(action.ordenesEliminadas || []).length} orden(es) pendiente(s)`
+                        : escapeHtml(previous?.descripcion || '—')}</td>
                     <td class="text-secondary text-nowrap">${escapeHtml(formatDateTime(action.fecha))}</td>
                 </tr>`;
         }).join('')
@@ -85,7 +89,7 @@ function render(actions) {
                     <div class="panel-header">
                         <div>
                             <h2 class="panel-title" id="stack-properties-title">Propiedades de la pila</h2>
-                            <p class="panel-subtitle">Estructura temporal en memoria del backend.</p>
+                            <p class="panel-subtitle">Persistida en PostgreSQL y reconstruida al iniciar el backend.</p>
                         </div>
                     </div>
                     <div class="panel-body">
@@ -98,7 +102,7 @@ function render(actions) {
                                 <dt>Tope actual</dt>
                                 <dd>
                                     ${top
-                                        ? `${actionBadge(top.tipo)} <span class="mono ms-1">OM-${escapeHtml(top.idOrden)}</span>`
+                                        ? `${actionBadge(top.tipo)} <span class="mono ms-1">${top.tipo === 'BAJA_EQUIPO' ? escapeHtml(top.equipoPrevio?.codigo || '—') : `OM-${escapeHtml(top.idOrden)}`}</span>`
                                         : '<span class="text-secondary">Sin acciones registradas.</span>'}
                                 </dd>
                             </div>
@@ -116,11 +120,11 @@ function render(actions) {
                         </div>
 
                         <p class="small text-secondary mt-3 mb-2">
-                            Tipos registrados: CREAR, MODIFICAR, CANCELAR y CERRAR.
+                            Tipos registrados: CREAR, MODIFICAR, CANCELAR, CERRAR y BAJA_EQUIPO.
                         </p>
                         <p class="small text-secondary mb-0">
                             <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
-                            La pila no se guarda en PostgreSQL: se pierde al reiniciar el backend.
+                            Los snapshots permiten deshacer incluso después de reiniciar el backend.
                         </p>
                     </div>
                 </section>
@@ -142,7 +146,9 @@ export async function mount(root) {
         const confirmed = await confirmDialog({
             title: 'Deshacer última acción',
             message: '¿Deshacer la acción en el tope de la pila?',
-            details: `Tipo: ${top.tipo} · Orden: OM-${top.idOrden}. La reversión se aplicará primero en PostgreSQL.`,
+            details: top.tipo === 'BAJA_EQUIPO'
+                ? `Equipo: ${top.equipoPrevio?.codigo || '—'} · Órdenes pendientes: ${(top.ordenesEliminadas || []).length}. La reversión se aplicará en PostgreSQL.`
+                : `Tipo: ${top.tipo} · Orden: OM-${top.idOrden}. La reversión se aplicará en PostgreSQL.`,
             confirmText: 'Deshacer',
             variant: 'warning',
             icon: 'arrow-counterclockwise',
@@ -151,7 +157,9 @@ export async function mount(root) {
 
         try {
             await api.ordenes.deshacer();
-            showToast(`Se revirtió la acción ${top.tipo} de OM-${top.idOrden}.`);
+            showToast(top.tipo === 'BAJA_EQUIPO'
+                ? `Se reactivó el equipo ${top.equipoPrevio?.codigo || ''} y se restauraron sus órdenes pendientes.`
+                : `Se revirtió la acción ${top.tipo} de OM-${top.idOrden}.`);
             notifyDataChanged();
             await load();
         } catch (error) {

@@ -2,7 +2,7 @@
 
 Migración del sistema de escritorio (Java Swing + JDBC) a una **API REST con Spring Boot 3.5 y Java 21**, preparada para desplegarse en **Render** como *Web Service* con Docker y para conectarse a **PostgreSQL en Aiven**.
 
-La lógica académica se conserva: las clases de `modelo/`, las estructuras propias de `estructuras/` (AVL, cola de prioridad y pila) y los DAO JDBC de `datos/` **no fueron modificados**. La interfaz Swing y el menú de consola se eliminaron.
+La lógica académica se conserva en `modelo/`, `estructuras/` (AVL, cola de prioridad y pila) y los DAO JDBC de `datos/`; ahora la pila se reconstruye desde PostgreSQL y el AVL contiene solo equipos activos. La interfaz Swing y el menú de consola se eliminaron.
 
 ---
 
@@ -23,10 +23,11 @@ Petición HTTP (JSON)
 └────────┬─────────┘
          │
          ├──────────────► estructuras/ (ArbolAVL, ColaPrioridad, PilaAcciones)
-         │                 Requisito académico. Viven en memoria.
+         │                 AVL y cola: cachés reconstruibles.
+         │                 Pila LIFO: persistida en PostgreSQL.
          ▼
 ┌──────────────────┐
-│      datos/      │  DAO con JDBC puro (PreparedStatement) — sin cambios
+│      datos/      │  DAO con JDBC puro (PreparedStatement)
 └────────┬─────────┘
          │
          ▼
@@ -54,9 +55,9 @@ Petición HTTP (JSON)
 ├── pom.xml
 └── src/main/
     ├── java/
-    │   ├── modelo/                 # SIN CAMBIOS (Area, Equipo, OrdenMantenimiento, Criticidad)
-    │   ├── estructuras/            # SIN CAMBIOS (ArbolAVL, ColaPrioridad, PilaAcciones, ...)
-    │   ├── datos/                  # SIN CAMBIOS (AreaDAO, EquipoDAO, OrdenDAO, ConexionBD, Configuracion)
+    │   ├── modelo/                 # Area, Equipo, OrdenMantenimiento, Criticidad
+    │   ├── estructuras/            # ArbolAVL, ColaPrioridad, PilaAcciones, ...
+    │   ├── datos/                  # DAO JDBC, incluida la persistencia de acciones
     │   └── com/grupo7/sgmi/
     │       ├── SgmiApplication.java
     │       ├── controllers/
@@ -77,7 +78,9 @@ Petición HTTP (JSON)
     └── resources/
         ├── application.properties
         ├── esquema.sql
-        └── esquema_carbono.sql
+        ├── esquema_carbono.sql
+        ├── migracion_identidad_equipo_acciones.sql
+        └── reiniciar_datos_desarrollo.sql
 ```
 
 ### Qué se eliminó y por qué
@@ -89,18 +92,20 @@ Petición HTTP (JSON)
 
 ### Cómo se usan las estructuras académicas
 
-- **AVL de equipos**: se carga desde PostgreSQL la primera vez que se usa la API y se mantiene sincronizado en cada alta, modificación o borrado de equipos. `GET /api/equipos` devuelve el recorrido inorden (ordenado por código).
+- **AVL de equipos**: se construye desde PostgreSQL al primer uso y contiene únicamente equipos activos. `GET /api/equipos` devuelve el recorrido inorden (ordenado por código).
 - **Cola de prioridad**: contiene solo órdenes `PENDIENTE`. Se carga desde la base y se actualiza al crear, modificar, cerrar, cancelar o deshacer. `GET /api/ordenes/cola` devuelve el orden de atención sin alterar la cola.
-- **Pila de acciones**: guarda las operaciones para deshacer (LIFO). Es **temporal**: vive en la memoria del proceso y se pierde al reiniciar. PostgreSQL sigue siendo la fuente de verdad.
+- **Pila de acciones**: PostgreSQL guarda el tipo, fecha, snapshot JSONB y estado de deshacer de cada acción. La estructura LIFO en memoria se reconstruye al iniciar; una acción compuesta `BAJA_EQUIPO` incluye el equipo y las órdenes pendientes eliminadas con sus posiciones de atención.
 
-> **Importante (escalado):** la cola, el AVL y la pila son estado en memoria del proceso. Con una sola instancia en Render todo es consistente. Si el servicio se escala a varias instancias, cada una tendrá su propia cola/pila; los datos persistidos siguen siendo los mismos en PostgreSQL.
+> **Importante (escalado):** AVL y cola son cachés por proceso; la pila y sus snapshots son compartidos en PostgreSQL. Las operaciones de órdenes, bajas y deshacer se serializan con bloqueos de PostgreSQL, y las consultas reconstruyen la caché antes de usarla.
 
 ### Reglas de negocio conservadas
 
 - **Criticidad**: `puntaje = 2 × impacto + 2 × riesgoSeguridad + 2` si no hay respaldo (0 si hay respaldo). `ALTA` si el riesgo es 3 o el puntaje ≥ 11; `MEDIA` si ≥ 7; `BAJA` en otro caso.
 - **Orden de atención**: primero la mayor criticidad; a igual criticidad, la orden más antigua (menor `consecutivo`).
 - **Estados**: `PENDIENTE`, `CERRADA`, `CANCELADA`. Al cerrar o cancelar se asigna `fecha_cierre`; una orden pendiente no tiene fecha de cierre (regla `ck_orden_fechas`).
-- **Deshacer**: revierte la última acción (`CREAR`, `MODIFICAR`, `CERRAR` o `CANCELAR`) y solo retira la acción de la pila si PostgreSQL confirmó el cambio.
+- **Deshacer**: revierte la última acción (`CREAR`, `MODIFICAR`, `CERRAR`, `CANCELAR` o `BAJA_EQUIPO`) en la misma transacción que la marca como deshecha. La pila conserva el orden LIFO tras reiniciar.
+- **Equipos**: `id_equipo` es la PK autogenerada; `codigo` es único e inmutable desde la API y sigue siendo el identificador de negocio/índice AVL. La baja es lógica. Reenviar `POST /api/equipos` con un código inactivo reactiva ese registro y no crea otra identidad.
+- **Órdenes al dar de baja**: se eliminan únicamente órdenes `PENDIENTE`, que son las únicas abiertas según la cola actual. `CERRADA` y `CANCELADA` son terminales y se conservan; el snapshot permite restaurar pendientes, identificadores, fechas y prioridad.
 
 ---
 
@@ -110,11 +115,12 @@ Petición HTTP (JSON)
 - Maven 3.9+ (opcional: el proyecto incluye Maven Wrapper y puede compilar sin Maven global)
 - PostgreSQL con el esquema de `src/main/resources/esquema.sql` aplicado (local o Aiven)
 - Para habilitar huella de carbono, aplicar también `src/main/resources/esquema_carbono.sql`
+- Para una base existente creada con el esquema anterior, aplicar una vez `src/main/resources/migracion_identidad_equipo_acciones.sql`
 - Docker (opcional, para probar la imagen o desplegar en Render)
 
 ### Base de datos
 
-El proyecto **no genera scripts para crear usuarios**. Solo necesita una base PostgreSQL existente y aplicar una vez el esquema:
+El proyecto **no genera scripts para crear usuarios ni ejecuta migraciones al arrancar**. Para una base nueva, aplique el esquema:
 
 ```bash
 psql "postgresql://USUARIO:CLAVE@HOST:PUERTO/BASE?sslmode=require" \
@@ -124,14 +130,67 @@ psql "postgresql://USUARIO:CLAVE@HOST:PUERTO/BASE?sslmode=require" \
 Si la base en la nube es Aiven, copie el host, puerto, base y usuario desde la consola de Aiven y agregue `?sslmode=require` a la URL JDBC.
 
 La migración `esquema_carbono.sql` agrega los parámetros energéticos por equipo,
-configura el factor inicial documentado en la versión Swing (`0.1500 kg CO₂/kWh`) y crea
-el historial persistente. Aplíquela una sola vez (es idempotente) antes de desplegar esta
-versión del backend; la aplicación no ejecuta migraciones automáticamente:
+configura el factor inicial (`0.1500 kg CO₂/kWh`) y crea el historial de carbono. Aplíquela
+una vez después de `esquema.sql` cuando se habilite carbono:
 
 ```bash
 psql "postgresql://HOST:PUERTO/BASE?sslmode=require" \
      -f src/main/resources/esquema_carbono.sql
 ```
+
+Para una base ya creada con el esquema anterior (`equipo.codigo` como PK), respalde la base
+y aplique **una sola vez** la migración siguiente antes de desplegar el backend nuevo. Esta
+migración cambia las claves foráneas de órdenes y, si ya existe, carbono; crea la tabla de
+acciones vacía. No limpia ni recrea el esquema:
+
+```bash
+psql "postgresql://HOST:PUERTO/BASE?sslmode=require" \
+     -v ON_ERROR_STOP=1 \
+     -f src/main/resources/migracion_identidad_equipo_acciones.sql
+```
+
+La migración no está diseñada para volver a ejecutarse ni para una base nueva que ya use
+`esquema.sql`. Las acciones históricas anteriores vivían solo en memoria y no se pueden
+recuperar; la tabla persistente empieza vacía. Inspeccione primero el resultado y respalde
+especialmente antes de actualizar una base compartida.
+
+### Reiniciar datos de desarrollo
+
+El reinicio conserva el esquema, elimina las áreas, equipos, órdenes, registros de carbono
+si existen y todas las acciones (incluidos snapshots); reinicia las secuencias y restablece
+el factor de carbono al valor inicial `0.1500`. **Es destructivo e irreversible. No lo
+ejecute contra producción ni sobre una base compartida.** El script falla salvo que la
+base esté nombrada con `dev`, `development`, `local` o `test`, no contenga `prod`, se
+confirme el entorno y la URL resuelva al nombre esperado.
+
+```bash
+APP_ENV=development \
+DEV_DATABASE_URL='postgresql://localhost:5432/mantenimiento_dev' \
+DEV_DATABASE_NAME=mantenimiento_dev \
+CONFIRM_RESET_DEVELOPMENT_DATA=YES \
+sh scripts/reiniciar-datos-desarrollo.sh
+```
+
+Si la base de aprendizaje/pruebas tiene otro nombre (por ejemplo la `defaultdb` de Aiven),
+agregue `RESET_CONFIRM_DATABASE_NAME` con su nombre **exacto**. El script y el SQL vuelven
+a comprobar que coincida con `DEV_DATABASE_NAME` y con la base real; además se mantienen
+obligatorios `APP_ENV=development`, la confirmación explícita y el rechazo de nombres con
+`prod`. No use este mecanismo con una base de producción o compartida:
+
+```bash
+export PGPASSWORD='su_clave_real'
+APP_ENV=development PGUSER=avnadmin \
+DEV_DATABASE_URL='postgresql://HOST:PUERTO/defaultdb?sslmode=require' \
+DEV_DATABASE_NAME=defaultdb \
+RESET_CONFIRM_DATABASE_NAME=defaultdb \
+CONFIRM_RESET_DEVELOPMENT_DATA=YES \
+sh scripts/reiniciar-datos-desarrollo.sh
+```
+
+El SQL del reinicio también exige la guarda `app.reset_guard=DEVELOPMENT_ONLY` que el
+script inyecta; ejecutarlo a mano con `psql` sin esa guarda falla. El backend no realiza
+este reinicio automáticamente. La base debe tener aplicado el esquema nuevo y la tabla
+`accion_historial`.
 
 ---
 
@@ -202,7 +261,9 @@ Respuesta esperada:
 {"estado":"ok","baseDatos":"conectada","timestamp":"2026-11-04T22:11:12"}
 ```
 
-Si PostgreSQL no responde, el endpoint devuelve `503` y la aplicación sigue arrancando (el pool reintenta en la siguiente petición).
+El backend carga el AVL, la cola de órdenes pendientes y la pila persistente durante el
+arranque; PostgreSQL debe estar disponible. Si falla la carga, el inicio falla explícitamente
+y debe corregirse la conexión antes de volver a arrancar.
 
 ### 3.3 Docker local
 
@@ -227,7 +288,7 @@ El contenedor escucha en el puerto indicado por `PORT` o, si no existe, en `8080
    - `DB_POOL_SIZE` (opcional) → por ejemplo `5`
    - `CORS_ALLOWED_ORIGINS` → origen del frontend, por ejemplo `https://mi-frontend.onrender.com`; puede agregar más orígenes separados por comas. Para desarrollo local use `http://localhost:5500`.
    - **No defina `PORT`**: Render lo inyecta automáticamente y la aplicación lo toma con `${PORT:8080}`.
-5. Antes del primer despliegue que incluya carbono, aplique `esquema_carbono.sql` a la base de datos de Render/Aiven (ver sección 2). Sin esa migración, la API no está lista y las consultas de equipos fallarán explícitamente.
+5. Antes de desplegar, aplique `migracion_identidad_equipo_acciones.sql` una sola vez si la base ya existía con el esquema anterior. Para una base nueva aplique `esquema.sql`; en ambos casos aplique `esquema_carbono.sql` si habilitará carbono (ver sección 2). No ejecute scripts de reinicio en Render/Aiven.
 6. En **Health Check Path** configure `/api/estado`.
 7. Despliegue. El `Dockerfile` compila con Maven y JDK 21 y ejecuta el JAR con un JRE 21 sin privilegios de root.
 
@@ -264,19 +325,21 @@ Todas las respuestas son JSON (`Content-Type: application/json`). Los errores us
 
 | Método | Ruta | Cuerpo / Parámetros | Devuelve | Códigos |
 |---|---|---|---|---|
-| `GET` | `/api/equipos` | — | Equipos ordenados por código (inorden del AVL): `codigo`, `nombre`, `idArea` | `200` |
-| `GET` | `/api/equipos/{codigo}` | `codigo` en la ruta | Un equipo | `200`, `404` |
-| `POST` | `/api/equipos` | `{"codigo":"...","nombre":"...","idArea":1}` | Equipo creado | `201`, `400`, `409` |
+| `GET` | `/api/equipos` | — | Equipos activos ordenados por código (inorden del AVL): `id`, `codigo`, `nombre`, `idArea`, `activo` | `200` |
+| `GET` | `/api/equipos/{codigo}` | `codigo` en la ruta | Un equipo activo; los inactivos dan `404` | `200`, `404` |
+| `POST` | `/api/equipos` | `{"codigo":"...","nombre":"...","idArea":1}` | Equipo creado (`201`) o registro inactivo reactivado (`200`) | `200`, `201`, `400`, `409` |
 | `PUT` | `/api/equipos/{codigo}` | `{"nombre":"...","idArea":1}` | Equipo actualizado (el código no cambia) | `200`, `400`, `404`, `409` |
-| `DELETE` | `/api/equipos/{codigo}` | `?eliminarOrdenes=false` (por defecto) | Sin cuerpo | `204`, `404`, `409` |
-
-Para borrar un equipo con órdenes asociadas hay que confirmar el borrado en cascada:
+| `DELETE` | `/api/equipos/{codigo}` | — | Baja lógica, elimina solo pendientes y registra una acción compuesta deshacible | `204`, `404`, `409` |
 
 ```bash
-curl -X DELETE "http://localhost:8080/api/equipos/EQ-001?eliminarOrdenes=true"
+curl -X DELETE "http://localhost:8080/api/equipos/EQ-001"
 ```
 
-Sin `eliminarOrdenes=true`, PostgreSQL rechaza el borrado por la clave foránea `ON DELETE RESTRICT` y la API devuelve `409`.
+El registro del equipo y su código único se conservan. Se eliminan físicamente solo
+órdenes `PENDIENTE`; las `CERRADA` y `CANCELADA` permanecen en la base y en el historial.
+El historial completo de órdenes conserva `codigoEquipo`, incluso si el equipo está inactivo.
+Para volver a dar de alta el mismo código, `POST /api/equipos` reactiva la identidad
+existente; no se permite insertar un duplicado.
 
 ### 5.3 Órdenes — `/api/ordenes`
 
@@ -285,13 +348,13 @@ Sin `eliminarOrdenes=true`, PostgreSQL rechaza el borrado por la clave foránea 
 | `GET` | `/api/ordenes` | `?estado=PENDIENTE` y/o `?codigoEquipo=EQ-001` (opcionales) | Lista histórica de órdenes | `200`, `400` |
 | `GET` | `/api/ordenes/{id}` | `id` en la ruta | Una orden | `200`, `404` |
 | `GET` | `/api/ordenes/cola` | — | Órdenes pendientes en orden de atención (la primera es la más prioritaria) | `200` |
-| `GET` | `/api/ordenes/historial` | — | Acciones para deshacer, de la más reciente a la más antigua | `200` |
+| `GET` | `/api/ordenes/historial` | — | Acciones persistidas para deshacer, de la más reciente a la más antigua | `200` |
 | `POST` | `/api/ordenes` | Ver ejemplo abajo | Orden creada con `id`, `consecutivo` y `fechaCreacion` de PostgreSQL | `201`, `400`, `404`, `409` |
 | `PUT` | `/api/ordenes/{id}` | `{"tipo","descripcion","impacto","riesgoSeguridad","hayRespaldo"}` | Orden modificada (recalcula prioridad) | `200`, `400`, `404`, `409` |
 | `POST` | `/api/ordenes/{id}/cerrar` | — | Orden en estado `CERRADA` con `fechaCierre` | `200`, `404`, `409` |
 | `POST` | `/api/ordenes/{id}/cancelar` | — | Orden en estado `CANCELADA` con `fechaCierre` | `200`, `404`, `409` |
 | `POST` | `/api/ordenes/atender-siguiente` | — | Cierra la orden más prioritaria de la cola | `200`, `404`, `409` |
-| `POST` | `/api/ordenes/historial/deshacer` | — | Acción revertida | `200`, `404`, `409` |
+| `POST` | `/api/ordenes/historial/deshacer` | — | Acción revertida atómicamente; incluye reactivación y restauración de órdenes al deshacer `BAJA_EQUIPO` | `200`, `404`, `409` |
 
 Ejemplo de creación:
 
@@ -339,6 +402,7 @@ Formato de una acción del historial:
 ```json
 {
   "tipo": "CERRAR",
+  "idAccion": 12,
   "idOrden": 10,
   "fecha": "2026-11-04T22:16:10",
   "estadoPrevio": {
@@ -356,6 +420,13 @@ Formato de una acción del historial:
   }
 }
 ```
+
+Una baja se representa como una sola acción `BAJA_EQUIPO`; su respuesta incluye
+`equipoPrevio` y `ordenesEliminadas`. El snapshot JSONB persistido incluye los IDs,
+consecutivos, estado, fechas y posición de prioridad de cada orden pendiente. Los IDs se
+restauran explícitamente y las secuencias PostgreSQL se sincronizan en la misma operación.
+La acción se marca como deshecha solo si la reactivación y todas las restauraciones
+terminan correctamente.
 
 ### 5.4 Estadísticas — `/api/estadisticas`
 
@@ -426,7 +497,7 @@ Se usa como **Health Check** en Render.
 |---|---|
 | `400 Bad Request` | Cuerpo inválido, campo faltante, tipo/estado no permitido o parámetro con formato incorrecto. |
 | `404 Not Found` | El área, equipo u orden no existe, no está pendiente o la ruta no existe. |
-| `409 Conflict` | Clave duplicada, clave foránea inválida, área con equipos, equipo con órdenes o una orden que ya no está pendiente. |
+| `409 Conflict` | Código de equipo activo duplicado, clave foránea inválida, área asociada o conflicto concurrente al deshacer. |
 | `500 Internal Server Error` | Error inesperado de PostgreSQL o del servidor. |
 | `503 Service Unavailable` | No hay conexión con PostgreSQL. |
 
@@ -438,7 +509,7 @@ Se usa como **Health Check** en Render.
 ./mvnw clean package
 ```
 
-Las pruebas unitarias y de contrato HTTP corren con Maven. La persistencia requiere PostgreSQL y la migración aplicada:
+Las pruebas unitarias y de contrato HTTP corren con Maven:
 
 ```bash
 curl http://localhost:8080/api/estado
@@ -450,8 +521,39 @@ curl http://localhost:8080/api/estadisticas
 curl http://localhost:8080/api/carbono/resumen
 ```
 
-Las pruebas JUnit de carbono (`CalculadoraCarbonoTest`, `CarbonoControllerTest`) corren
-con `./mvnw test`. La persistencia requiere PostgreSQL y la migración aplicada.
+```bash
+./mvnw test
+```
+
+La suite incluye el round-trip JSON del snapshot compuesto (equipo, IDs, fechas y posición
+de cola), preservación de estado/fecha terminal y el orden determinista de la cola.
+
+Las pruebas de integración se ejecutan contra PostgreSQL real y están deshabilitadas en la
+suite normal para no depender de una base local. El script incluido levanta un cluster
+temporal aislado en el directorio de temporales, crea la base `sgmi_test`, aplica
+`esquema.sql` y `esquema_carbono.sql`, ejecuta las pruebas y detiene el cluster:
+
+```bash
+./scripts/probar-integracion.sh
+```
+
+También puede apuntar a una base propia de desarrollo/test:
+
+```bash
+TEST_DB_URL='jdbc:postgresql://127.0.0.1:55432/sgmi_test' \
+TEST_DB_USER=postgres TEST_DB_PASSWORD='' \
+./mvnw -Dtest=BajaEquipoIntegracionTest test
+```
+
+> **Advertencia:** la prueba recrea el esquema `public` de la base indicada. El propio test
+> se niega a ejecutarse si el nombre de la base no contiene `test`, `dev` o `local`, o si
+> contiene `prod`. No la ejecute contra Aiven ni contra una base compartida.
+
+La prueba de integración cubre: baja sin órdenes, baja con pendientes conservando
+`CERRADA`/`CANCELADA`, restauración de IDs, fechas y prioridad, deshacer tras reconstruir
+las estructuras como en un reinicio, reactivación sin duplicar el código, reconstrucción del
+AVL solo con activos, rollback ante una falla simulada con un trigger y dos procesos que
+intentan deshacer la misma acción sin restaurar dos veces.
 
 ---
 

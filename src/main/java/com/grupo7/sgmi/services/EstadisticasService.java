@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import com.grupo7.sgmi.dto.EstadisticasDTO;
 
 import datos.AreaDAO;
+import datos.EquipoDAO;
 import datos.OrdenDAO;
 import modelo.Area;
 import modelo.Equipo;
@@ -17,7 +18,9 @@ import modelo.OrdenMantenimiento;
 
 /**
  * Indicadores calculados exclusivamente con las ordenes, equipos y areas persistidos.
- * El area de cada orden se resuelve buscando el equipo en el indice AVL.
+ * El area de cada orden se resuelve desde PostgreSQL, de modo que una orden historica
+ * sigue asociada a su area aunque el equipo ya este dado de baja. El AVL solo aporta
+ * los contadores de equipos activos.
  */
 @Service
 public class EstadisticasService {
@@ -35,10 +38,16 @@ public class EstadisticasService {
                 conexion -> new OrdenDAO(conexion).consultarTodas());
         List<Area> areas = ejecutor.enLectura(
                 conexion -> new AreaDAO(conexion).consultarTodas());
+        List<Equipo> equipos = ejecutor.enLectura(
+                conexion -> new EquipoDAO(conexion).consultarTodosIncluyendoInactivos());
 
         Map<Integer, String> nombrePorArea = new HashMap<>();
         for (Area area : areas) {
             nombrePorArea.put(area.getIdArea(), area.getNombre());
+        }
+        Map<String, Integer> areaPorCodigoEquipo = new HashMap<>();
+        for (Equipo equipo : equipos) {
+            areaPorCodigoEquipo.put(equipo.getCodigo(), equipo.getIdArea());
         }
 
         Map<String, Long> porEstado = new LinkedHashMap<>();
@@ -58,16 +67,19 @@ public class EstadisticasService {
         Map<String, Long> porArea = new LinkedHashMap<>();
 
         synchronized (estado) {
-            estado.asegurarCargado();
+            estado.recargar();
             for (OrdenMantenimiento orden : ordenes) {
                 porEstado.merge(orden.getEstado().name(), 1L, Long::sum);
                 porCriticidad.merge(orden.getCriticidad().name(), 1L, Long::sum);
                 porTipo.merge(orden.getTipo(), 1L, Long::sum);
 
-                Equipo equipo = estado.getEquipos().buscar(orden.getCodigoEquipo());
-                String area = equipo == null
-                        ? "Sin area (equipo no indexado)"
-                        : nombrePorArea.getOrDefault(equipo.getIdArea(), "Area " + equipo.getIdArea());
+                Integer idArea = areaPorCodigoEquipo.get(orden.getCodigoEquipo());
+                String area;
+                if (idArea == null) {
+                    area = "Sin area (equipo no registrado)";
+                } else {
+                    area = nombrePorArea.getOrDefault(idArea, "Area " + idArea);
+                }
                 porArea.merge(area, 1L, Long::sum);
             }
 

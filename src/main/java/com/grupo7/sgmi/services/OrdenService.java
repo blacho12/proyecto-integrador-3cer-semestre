@@ -2,11 +2,13 @@ package com.grupo7.sgmi.services;
 
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
 import org.springframework.stereotype.Service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.grupo7.sgmi.dto.AccionDTO;
 import com.grupo7.sgmi.dto.OrdenActualizarRequest;
 import com.grupo7.sgmi.dto.OrdenRequest;
@@ -14,70 +16,58 @@ import com.grupo7.sgmi.excepciones.ConflictoDatosException;
 import com.grupo7.sgmi.excepciones.DatosInvalidosException;
 import com.grupo7.sgmi.excepciones.RecursoNoEncontradoException;
 
+import datos.AccionDAO;
 import datos.EquipoDAO;
 import datos.OrdenDAO;
 import estructuras.Accion;
+import estructuras.Accion.OrdenEnCola;
 import estructuras.ColaPrioridad;
 import estructuras.PilaAcciones;
+import modelo.Equipo;
 import modelo.OrdenMantenimiento;
 import modelo.OrdenMantenimiento.Estado;
 
-/**
- * Reglas de negocio de las ordenes de mantenimiento.
- *
- * Cada operacion se confirma primero en PostgreSQL y solo despues se actualizan
- * la cola de prioridad y la pila de acciones. Si la base falla, las estructuras
- * quedan como estaban. La cola conserva el orden de atencion calculado por las
- * estructuras academicas: mayor criticidad primero y, a igual criticidad, la mas antigua.
- */
+/** Reglas de negocio de las órdenes, la cola de prioridad y la pila persistente. */
 @Service
 public class OrdenService {
 
     private final EjecutorBD ejecutor;
     private final EstadoEnMemoria estado;
+    private final ObjectMapper objectMapper;
 
-    public OrdenService(EjecutorBD ejecutor, EstadoEnMemoria estado) {
+    public OrdenService(EjecutorBD ejecutor, EstadoEnMemoria estado, ObjectMapper objectMapper) {
         this.ejecutor = ejecutor;
         this.estado = estado;
+        this.objectMapper = objectMapper;
     }
 
-    /** Historico completo o filtrado por estado y/o equipo. */
     public List<OrdenMantenimiento> listar(Estado estadoOrden, String codigoEquipo) {
         String codigo = (codigoEquipo == null || codigoEquipo.isBlank()) ? null : codigoEquipo.trim();
         return ejecutor.enLectura(conexion -> {
             OrdenDAO dao = new OrdenDAO(conexion);
             if (estadoOrden != null && codigo != null) {
                 return dao.consultarPorEstado(estadoOrden).stream()
-                        .filter(orden -> codigo.equals(orden.getCodigoEquipo()))
-                        .toList();
+                        .filter(orden -> codigo.equals(orden.getCodigoEquipo())).toList();
             }
-            if (estadoOrden != null) {
-                return dao.consultarPorEstado(estadoOrden);
-            }
-            if (codigo != null) {
-                return dao.consultarPorEquipo(codigo);
-            }
+            if (estadoOrden != null) return dao.consultarPorEstado(estadoOrden);
+            if (codigo != null) return dao.consultarPorEquipo(codigo);
             return dao.consultarTodas();
         });
     }
 
     public OrdenMantenimiento obtener(long id) {
         OrdenMantenimiento orden = ejecutor.enLectura(conexion -> new OrdenDAO(conexion).consultarPorId(id));
-        if (orden == null) {
-            throw noEncontrada(id);
-        }
+        if (orden == null) throw noEncontrada(id);
         return orden;
     }
 
-    /** Ordenes PENDIENTE en orden de atencion, sin modificarlo. La primera es la mas prioritaria. */
     public List<OrdenMantenimiento> cola() {
         synchronized (estado) {
-            estado.asegurarCargado();
+            estado.recargar();
             return List.of(estado.getOrdenesPendientes().recorridoPorPrioridad());
         }
     }
 
-    /** Registra una orden; PostgreSQL asigna id, consecutivo y fecha de creacion. */
     public OrdenMantenimiento crear(OrdenRequest peticion) {
         String codigo = peticion.codigoEquipo().trim();
         String tipo = peticion.tipo().trim().toUpperCase(Locale.ROOT);
@@ -85,64 +75,53 @@ public class OrdenService {
         validarOrden(tipo, descripcion, peticion.impacto(), peticion.riesgoSeguridad());
 
         synchronized (estado) {
-            estado.asegurarCargado();
-            if (estado.getEquipos().buscar(codigo) == null) {
-                throw new RecursoNoEncontradoException(
-                        "El equipo '" + codigo + "' no existe en el catalogo de equipos.");
-            }
-            OrdenMantenimiento creada = ejecutor.enTransaccion(conexion -> {
-                if (new EquipoDAO(conexion).consultarPorCodigo(codigo) == null) {
+            estado.recargar();
+            Creacion resultado = ejecutor.enTransaccion(conexion -> {
+                AccionDAO acciones = new AccionDAO(conexion, objectMapper);
+                acciones.bloquearPila();
+                Equipo equipo = new EquipoDAO(conexion).consultarActivoPorCodigoParaActualizar(codigo);
+                if (equipo == null) {
                     throw new RecursoNoEncontradoException(
-                            "El equipo '" + codigo + "' no existe en PostgreSQL.");
+                            "El equipo '" + codigo + "' no existe o está inactivo.");
                 }
                 OrdenMantenimiento nueva = new OrdenMantenimiento(
-                        codigo, tipo, descripcion, peticion.impacto(),
-                        peticion.riesgoSeguridad(), peticion.hayRespaldo());
-                return new OrdenDAO(conexion).insertar(nueva);
+                        0, 0, equipo.getId(), codigo, tipo, descripcion, peticion.impacto(),
+                        peticion.riesgoSeguridad(), peticion.hayRespaldo(), Estado.PENDIENTE, null, null);
+                OrdenMantenimiento creada = new OrdenDAO(conexion).insertar(nueva);
+                Accion accion = acciones.insertar(new Accion(Accion.Tipo.CREAR, creada.copia()));
+                return new Creacion(creada, accion);
             });
-            estado.getOrdenesPendientes().encolar(creada);
-            estado.getHistorial().apilar(new Accion(Accion.Tipo.CREAR, creada.copia()));
-            return creada;
+            estado.getOrdenesPendientes().encolar(resultado.orden());
+            estado.getHistorial().apilar(resultado.accion());
+            return resultado.orden();
         }
     }
 
-    /** Modifica los campos editables de una orden PENDIENTE y recalcula su prioridad. */
     public OrdenMantenimiento modificar(long id, OrdenActualizarRequest peticion) {
         String tipo = peticion.tipo().trim().toUpperCase(Locale.ROOT);
         String descripcion = peticion.descripcion().trim();
         validarOrden(tipo, descripcion, peticion.impacto(), peticion.riesgoSeguridad());
 
         synchronized (estado) {
-            estado.asegurarCargado();
-            ColaPrioridad cola = estado.getOrdenesPendientes();
-            OrdenMantenimiento orden = cola.buscarPorId(id);
-            if (orden == null || orden.getEstado() != Estado.PENDIENTE) {
-                throw noEncontrada(id);
-            }
-
-            OrdenMantenimiento previa = orden.copia();
-            cola.eliminarPorId(id);
-            orden.setTipo(tipo);
-            orden.setDescripcion(descripcion);
-            orden.setCriterios(peticion.impacto(), peticion.riesgoSeguridad(), peticion.hayRespaldo());
-
-            boolean actualizada;
-            try {
-                actualizada = ejecutor.enTransaccion(conexion -> new OrdenDAO(conexion).actualizar(orden));
-            } catch (RuntimeException e) {
-                restaurarValores(orden, previa);
-                cola.encolar(orden);
-                throw e;
-            }
-            if (!actualizada) {
-                restaurarValores(orden, previa);
-                cola.encolar(orden);
-                throw new RecursoNoEncontradoException("La orden OM-" + id + " ya no existe en PostgreSQL.");
-            }
-
-            cola.encolar(orden);
-            estado.getHistorial().apilar(new Accion(Accion.Tipo.MODIFICAR, previa));
-            return orden;
+            estado.recargar();
+            Modificacion resultado = ejecutor.enTransaccion(conexion -> {
+                AccionDAO acciones = new AccionDAO(conexion, objectMapper);
+                acciones.bloquearPila();
+                OrdenDAO dao = new OrdenDAO(conexion);
+                OrdenMantenimiento orden = dao.consultarPorIdParaActualizar(id);
+                if (orden == null || !orden.getEstado().esAbierto()) throw noEncontrada(id);
+                OrdenMantenimiento previa = orden.copia();
+                orden.setTipo(tipo);
+                orden.setDescripcion(descripcion);
+                orden.setCriterios(peticion.impacto(), peticion.riesgoSeguridad(), peticion.hayRespaldo());
+                if (!dao.actualizar(orden)) throw noEncontrada(id);
+                Accion accion = acciones.insertar(new Accion(Accion.Tipo.MODIFICAR, previa));
+                return new Modificacion(orden, accion);
+            });
+            estado.getOrdenesPendientes().eliminarPorId(id);
+            estado.getOrdenesPendientes().encolar(resultado.orden());
+            estado.getHistorial().apilar(resultado.accion());
+            return resultado.orden();
         }
     }
 
@@ -154,138 +133,128 @@ public class OrdenService {
         return cambiarEstado(id, Estado.CANCELADA, Accion.Tipo.CANCELAR);
     }
 
-    /** Atiende (cierra) la orden de mayor prioridad de la cola. */
     public OrdenMantenimiento atenderSiguiente() {
         synchronized (estado) {
-            estado.asegurarCargado();
+            estado.recargar();
             OrdenMantenimiento primera = estado.getOrdenesPendientes().verPrimera();
             if (primera == null) {
-                throw new RecursoNoEncontradoException(
-                        "No hay ordenes pendientes en la cola de prioridad.");
+                throw new RecursoNoEncontradoException("No hay órdenes pendientes en la cola de prioridad.");
             }
-            return cerrar(primera.getId());
+            return cambiarEstado(primera.getId(), Estado.CERRADA, Accion.Tipo.CERRAR);
         }
     }
 
-    /** Acciones apiladas, de la mas reciente a la mas antigua. */
     public List<AccionDTO> historial() {
         synchronized (estado) {
-            estado.asegurarCargado();
-            return Arrays.stream(estado.getHistorial().acciones())
-                    .map(this::aDTO)
-                    .toList();
+            estado.recargar();
+            return Arrays.stream(estado.getHistorial().acciones()).map(this::aDTO).toList();
         }
     }
 
-    /**
-     * Deshace la ultima accion (LIFO). La revision se confirma en PostgreSQL antes
-     * de retirar la accion de la pila; si falla, la pila queda intacta.
-     */
     public AccionDTO deshacer() {
         synchronized (estado) {
-            estado.asegurarCargado();
-            PilaAcciones historial = estado.getHistorial();
-            Accion accion = historial.verTope();
-            if (accion == null) {
-                throw new RecursoNoEncontradoException("No hay acciones para deshacer.");
-            }
-
-            OrdenMantenimiento previa = accion.getEstadoPrevio();
-            long id = accion.getIdOrden();
-
-            switch (accion.getTipo()) {
-                case CREAR -> {
-                    boolean eliminada = ejecutor.enTransaccion(
-                            conexion -> new OrdenDAO(conexion).eliminar(id));
-                    if (!eliminada) {
-                        throw new ConflictoDatosException(
-                                "No se pudo revertir: la orden OM-" + id + " ya no existe en PostgreSQL.");
-                    }
-                    estado.getOrdenesPendientes().eliminarPorId(id);
+            estado.recargar();
+            Accion accion = ejecutor.enTransaccion(conexion -> {
+                AccionDAO acciones = new AccionDAO(conexion, objectMapper);
+                acciones.bloquearPila();
+                Accion tope = acciones.consultarTopeParaActualizar();
+                if (tope == null) {
+                    throw new RecursoNoEncontradoException("No hay acciones para deshacer.");
                 }
-                case CANCELAR, CERRAR -> {
-                    boolean restaurada = ejecutor.enTransaccion(
-                            conexion -> new OrdenDAO(conexion).restaurarPendiente(id));
-                    if (!restaurada) {
-                        throw new ConflictoDatosException(
-                                "No se pudo revertir: la orden OM-" + id
-                                + " ya esta pendiente o no existe.");
-                    }
-                    if (estado.getOrdenesPendientes().buscarPorId(id) == null) {
-                        estado.getOrdenesPendientes().encolar(previa);
-                    }
+                revertir(conexion, tope);
+                if (!acciones.marcarDeshecha(tope.getIdAccion())) {
+                    throw new ConflictoDatosException("La acción del tope ya fue deshecha.");
                 }
-                case MODIFICAR -> {
-                    boolean actualizada = ejecutor.enTransaccion(
-                            conexion -> new OrdenDAO(conexion).actualizar(previa));
-                    if (!actualizada) {
-                        throw new ConflictoDatosException(
-                                "No se pudo revertir: la orden OM-" + id + " ya no existe.");
-                    }
-                    OrdenMantenimiento actual = estado.getOrdenesPendientes().buscarPorId(id);
-                    if (actual != null) {
-                        estado.getOrdenesPendientes().eliminarPorId(id);
-                        restaurarValores(actual, previa);
-                        estado.getOrdenesPendientes().encolar(actual);
-                    } else {
-                        estado.getOrdenesPendientes().encolar(previa.copia());
-                    }
-                }
-            }
-
-            historial.desapilar();
+                return tope;
+            });
+            estado.recargar();
             return aDTO(accion);
+        }
+    }
+
+    private void revertir(java.sql.Connection conexion, Accion accion) throws java.sql.SQLException {
+        OrdenDAO ordenes = new OrdenDAO(conexion);
+        long id = accion.getIdOrden();
+        switch (accion.getTipo()) {
+            case CREAR -> {
+                OrdenMantenimiento actual = ordenes.consultarPorIdParaActualizar(id);
+                if (actual == null || !actual.getEstado().esAbierto()
+                        || !ordenes.eliminarPendiente(id)) {
+                    throw new ConflictoDatosException(
+                            "No se pudo revertir: la orden OM-" + id + " ya no está pendiente.");
+                }
+            }
+            case CANCELAR, CERRAR -> {
+                if (!ordenes.restaurarPendiente(id)) {
+                    throw new ConflictoDatosException(
+                            "No se pudo revertir: la orden OM-" + id + " ya está pendiente o no existe.");
+                }
+            }
+            case MODIFICAR -> {
+                if (!ordenes.actualizar(accion.getEstadoPrevio())) {
+                    throw new ConflictoDatosException("No se pudo revertir: la orden OM-" + id + " ya no existe.");
+                }
+            }
+            case BAJA_EQUIPO -> {
+                Equipo equipo = accion.getEquipoPrevio();
+                EquipoDAO equipos = new EquipoDAO(conexion);
+                Equipo actual = equipo == null ? null : equipos.consultarPorIdParaActualizar(equipo.getId());
+                if (actual == null || (!actual.isActivo() && !equipos.restaurar(equipo))) {
+                    throw new ConflictoDatosException("No se pudo reactivar el equipo eliminado.");
+                }
+                List<OrdenEnCola> restauradas = accion.getOrdenesEliminadas().stream()
+                        .sorted(Comparator.comparingInt(OrdenEnCola::posicion)).toList();
+                for (OrdenEnCola orden : restauradas) ordenes.restaurarEliminada(orden.orden());
+                if (!restauradas.isEmpty()) ordenes.sincronizarSecuencias();
+            }
         }
     }
 
     private OrdenMantenimiento cambiarEstado(long id, Estado nuevoEstado, Accion.Tipo tipoAccion) {
         synchronized (estado) {
-            estado.asegurarCargado();
-            ColaPrioridad cola = estado.getOrdenesPendientes();
-            OrdenMantenimiento orden = cola.buscarPorId(id);
-            if (orden == null || orden.getEstado() != Estado.PENDIENTE) {
-                throw new RecursoNoEncontradoException(
-                        "La orden OM-" + id + " no existe o no esta pendiente.");
-            }
+            estado.recargar();
+            CambioEstado resultado = ejecutor.enTransaccion(conexion -> {
+                AccionDAO acciones = new AccionDAO(conexion, objectMapper);
+                acciones.bloquearPila();
+                OrdenDAO dao = new OrdenDAO(conexion);
+                OrdenMantenimiento orden = dao.consultarPorIdParaActualizar(id);
+                if (orden == null || !orden.getEstado().esAbierto()) {
+                    throw new RecursoNoEncontradoException(
+                            "La orden OM-" + id + " no existe o no está pendiente.");
+                }
+                OrdenMantenimiento previa = orden.copia();
+                LocalDateTime cierre = LocalDateTime.now().withNano(0);
+                if (!dao.cambiarEstado(id, nuevoEstado, cierre)) {
+                    throw new ConflictoDatosException("La orden OM-" + id + " ya no está pendiente.");
+                }
+                orden.setEstado(nuevoEstado);
+                orden.setFechaCierre(cierre);
+                Accion accion = acciones.insertar(new Accion(tipoAccion, previa));
+                return new CambioEstado(orden, accion);
+            });
 
-            OrdenMantenimiento previa = orden.copia();
-            LocalDateTime cierre = LocalDateTime.now().withNano(0);
-            boolean cambiada = ejecutor.enTransaccion(
-                    conexion -> new OrdenDAO(conexion).cambiarEstado(id, nuevoEstado, cierre));
-            if (!cambiada) {
-                throw new ConflictoDatosException(
-                        "La orden OM-" + id + " ya no esta pendiente en PostgreSQL.");
-            }
-
-            cola.eliminarPorId(id);
-            orden.setEstado(nuevoEstado);
-            orden.setFechaCierre(cierre);
-            estado.getHistorial().apilar(new Accion(tipoAccion, previa));
-            return orden;
+            estado.getOrdenesPendientes().eliminarPorId(id);
+            estado.getHistorial().apilar(resultado.accion());
+            return resultado.orden();
         }
     }
 
     private AccionDTO aDTO(Accion accion) {
-        return new AccionDTO(accion.getTipo().name(), accion.getIdOrden(),
-                accion.getFecha(), accion.getEstadoPrevio());
+        Long idOrden = accion.getEstadoPrevio() == null ? null : accion.getIdOrden();
+        return new AccionDTO(accion.getTipo().name(), accion.getIdAccion(), idOrden,
+                accion.getFecha(), accion.getEstadoPrevio(), accion.getEquipoPrevio(),
+                accion.getOrdenesEliminadas().stream().map(OrdenEnCola::orden).toList());
     }
 
-    private void restaurarValores(OrdenMantenimiento destino, OrdenMantenimiento previa) {
-        destino.setTipo(previa.getTipo());
-        destino.setDescripcion(previa.getDescripcion());
-        destino.setCriterios(previa.getImpacto(), previa.getRiesgoSeguridad(), previa.isHayRespaldo());
-    }
-
-    /** Aplica las mismas reglas CHECK de la tabla antes de llegar a PostgreSQL. */
     private void validarOrden(String tipo, String descripcion, Integer impacto, Integer riesgoSeguridad) {
         if (!"PREVENTIVO".equals(tipo) && !"CORRECTIVO".equals(tipo)) {
             throw new DatosInvalidosException("El tipo debe ser PREVENTIVO o CORRECTIVO.");
         }
         if (descripcion == null || descripcion.isBlank()) {
-            throw new DatosInvalidosException("La descripcion es obligatoria.");
+            throw new DatosInvalidosException("La descripción es obligatoria.");
         }
         if (impacto == null || impacto < 1 || impacto > 3) {
-            throw new DatosInvalidosException("El impacto de produccion debe estar entre 1 y 3.");
+            throw new DatosInvalidosException("El impacto de producción debe estar entre 1 y 3.");
         }
         if (riesgoSeguridad == null || riesgoSeguridad < 1 || riesgoSeguridad > 3) {
             throw new DatosInvalidosException("El riesgo de seguridad debe estar entre 1 y 3.");
@@ -293,7 +262,10 @@ public class OrdenService {
     }
 
     private RecursoNoEncontradoException noEncontrada(long id) {
-        return new RecursoNoEncontradoException(
-                "No existe la orden OM-" + id + " o no esta pendiente.");
+        return new RecursoNoEncontradoException("No existe la orden OM-" + id + " o no está pendiente.");
     }
+
+    private record Creacion(OrdenMantenimiento orden, Accion accion) { }
+    private record Modificacion(OrdenMantenimiento orden, Accion accion) { }
+    private record CambioEstado(OrdenMantenimiento orden, Accion accion) { }
 }

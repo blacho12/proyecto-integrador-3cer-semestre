@@ -11,6 +11,8 @@ public class ArbolAVL {
     public int tamano() { return tamano; }
     public int altura() { return altura(raiz); }
 
+    public void limpiar() { raiz = null; tamano = 0; }
+
     /** Raiz del arbol (solo lectura). La usa la vista para dibujar la estructura real. */
     public NodoAVL getRaiz() { return raiz; }
 

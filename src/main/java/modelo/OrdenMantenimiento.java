@@ -7,10 +7,19 @@ import java.time.LocalDateTime;
  * El consecutivo hace de marca de antiguedad (menor = mas antigua) y lo genera PostgreSQL.
  */
 public class OrdenMantenimiento {
-    public enum Estado { PENDIENTE, CERRADA, CANCELADA }
+    public enum Estado {
+        PENDIENTE, CERRADA, CANCELADA;
+
+        /** Solo PENDIENTE esta abierta: es la unica que vive en la cola de atencion. */
+        public boolean esAbierto() { return this == PENDIENTE; }
+
+        /** CERRADA y CANCELADA son terminales y conservan fecha de cierre. */
+        public boolean esTerminal() { return !esAbierto(); }
+    }
 
     private final long id;
     private final long consecutivo;
+    private final long idEquipo;
     private final String codigoEquipo;
     private String tipo;                 // PREVENTIVO o CORRECTIVO
     private String descripcion;
@@ -24,25 +33,24 @@ public class OrdenMantenimiento {
     /** Orden aun sin registrar: id, consecutivo y fecha_de_creacion los asigna PostgreSQL. */
     public OrdenMantenimiento(String codigoEquipo, String tipo, String descripcion,
                               int impacto, int riesgoSeguridad, boolean hayRespaldo) {
-        this.id = 0;
-        this.consecutivo = 0;
-        this.codigoEquipo = codigoEquipo;
-        this.tipo = tipo;
-        this.descripcion = descripcion;
-        this.impacto = impacto;
-        this.riesgoSeguridad = riesgoSeguridad;
-        this.hayRespaldo = hayRespaldo;
-        this.estado = Estado.PENDIENTE;
-        this.fechaCreacion = null;
-        this.fechaCierre = null;
+        this(0, 0, 0, codigoEquipo, tipo, descripcion, impacto, riesgoSeguridad, hayRespaldo,
+                Estado.PENDIENTE, null, null);
     }
 
     /** Orden leida completa desde la base de datos (o snapshot con fechas y estado incluidos). */
     public OrdenMantenimiento(long id, long consecutivo, String codigoEquipo, String tipo,
                               String descripcion, int impacto, int riesgoSeguridad, boolean hayRespaldo,
                               Estado estado, LocalDateTime fechaCreacion, LocalDateTime fechaCierre) {
+        this(id, consecutivo, 0, codigoEquipo, tipo, descripcion, impacto, riesgoSeguridad,
+                hayRespaldo, estado, fechaCreacion, fechaCierre);
+    }
+
+    public OrdenMantenimiento(long id, long consecutivo, long idEquipo, String codigoEquipo, String tipo,
+                              String descripcion, int impacto, int riesgoSeguridad, boolean hayRespaldo,
+                              Estado estado, LocalDateTime fechaCreacion, LocalDateTime fechaCierre) {
         this.id = id;
         this.consecutivo = consecutivo;
+        this.idEquipo = idEquipo;
         this.codigoEquipo = codigoEquipo;
         this.tipo = tipo;
         this.descripcion = descripcion;
@@ -57,13 +65,13 @@ public class OrdenMantenimiento {
     /** Constructor de pruebas en memoria: orden pendiente con fecha de creacion actual. */
     public OrdenMantenimiento(long id, long consecutivo, String codigoEquipo, String tipo,
                               String descripcion, int impacto, int riesgoSeguridad, boolean hayRespaldo) {
-        this(id, consecutivo, codigoEquipo, tipo, descripcion, impacto, riesgoSeguridad, hayRespaldo,
+        this(id, consecutivo, 0, codigoEquipo, tipo, descripcion, impacto, riesgoSeguridad, hayRespaldo,
                 Estado.PENDIENTE, LocalDateTime.now(), null);
     }
 
     /** Copia profunda: se usa como "foto" previa para poder deshacer una accion. */
     public OrdenMantenimiento copia() {
-        return new OrdenMantenimiento(id, consecutivo, codigoEquipo, tipo, descripcion,
+        return new OrdenMantenimiento(id, consecutivo, idEquipo, codigoEquipo, tipo, descripcion,
                 impacto, riesgoSeguridad, hayRespaldo, estado, fechaCreacion, fechaCierre);
     }
 
@@ -78,6 +86,7 @@ public class OrdenMantenimiento {
 
     public long getId() { return id; }
     public long getConsecutivo() { return consecutivo; }
+    public long getIdEquipo() { return idEquipo; }
     public String getCodigoEquipo() { return codigoEquipo; }
     public String getTipo() { return tipo; }
     public String getDescripcion() { return descripcion; }

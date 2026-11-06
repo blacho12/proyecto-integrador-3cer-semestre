@@ -88,7 +88,7 @@ public class CarbonoService {
         return ejecutor.enTransaccion(conexion -> {
             EquipoDAO equipos = new EquipoDAO(conexion);
             Equipo equipo = equipos.consultarPorCodigo(codigo);
-            if (equipo == null) {
+            if (equipo == null || !equipo.isActivo()) {
                 throw new RecursoNoEncontradoException("No existe el equipo con codigo '" + codigo + "'.");
             }
             if (!equipos.actualizarParametrosCarbono(
@@ -103,7 +103,8 @@ public class CarbonoService {
 
     public CarbonoRegistroDTO registrar(CarbonoRegistroRequest peticion) {
         return ejecutor.enTransaccion(conexion -> {
-            Equipo equipo = new EquipoDAO(conexion).consultarPorCodigo(peticion.codigoEquipo());
+            Equipo equipo = new EquipoDAO(conexion)
+                    .consultarActivoPorCodigoParaActualizar(peticion.codigoEquipo());
             if (equipo == null) {
                 throw new RecursoNoEncontradoException(
                         "No existe el equipo con codigo '" + peticion.codigoEquipo() + "'.");
@@ -113,7 +114,7 @@ public class CarbonoService {
             CalculadoraCarbono.Resultado resultado = CalculadoraCarbono.calcular(
                     equipo.getConsumoNormalKwh(), peticion.horasMalEstado(),
                     equipo.getPorcentajeExtra(), factor);
-            return dto(carbono.insertar(peticion.codigoEquipo(), peticion.horasMalEstado(),
+            return dto(carbono.insertar(equipo.getId(), peticion.codigoEquipo(), peticion.horasMalEstado(),
                     resultado.consumoAdicionalKwh(), resultado.emisionesKgCo2(), factor));
         });
     }

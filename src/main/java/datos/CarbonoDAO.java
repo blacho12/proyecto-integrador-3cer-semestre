@@ -50,20 +50,21 @@ public class CarbonoDAO {
         }
     }
 
-    public RegistroCarbono insertar(String codigoEquipo, BigDecimal horasMalEstado,
+    public RegistroCarbono insertar(long idEquipo, String codigoEquipo, BigDecimal horasMalEstado,
                                     BigDecimal consumoAdicionalKwh, BigDecimal emisionesKgCo2,
                                     BigDecimal factorEmision) throws SQLException {
         String sql = "INSERT INTO registro_carbono "
-                   + "(codigo_equipo, horas_mal_estado, consumo_adicional_kwh, "
+                   + "(id_equipo, codigo_equipo, horas_mal_estado, consumo_adicional_kwh, "
                    + "emisiones_kg_co2, factor_emision) "
-                   + "VALUES (?, ?, ?, ?, ?) RETURNING id_registro";
+                   + "VALUES (?, ?, ?, ?, ?, ?) RETURNING id_registro";
         long id;
         try (PreparedStatement ps = conexion.prepareStatement(sql)) {
-            ps.setString(1, codigoEquipo);
-            ps.setBigDecimal(2, horasMalEstado);
-            ps.setBigDecimal(3, consumoAdicionalKwh);
-            ps.setBigDecimal(4, emisionesKgCo2);
-            ps.setBigDecimal(5, factorEmision);
+            ps.setLong(1, idEquipo);
+            ps.setString(2, codigoEquipo);
+            ps.setBigDecimal(3, horasMalEstado);
+            ps.setBigDecimal(4, consumoAdicionalKwh);
+            ps.setBigDecimal(5, emisionesKgCo2);
+            ps.setBigDecimal(6, factorEmision);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
                     throw new SQLException("El INSERT de registro_carbono no devolvio el id generado.");
@@ -78,7 +79,7 @@ public class CarbonoDAO {
         List<RegistroCarbono> registros = new ArrayList<>();
         String sql = "SELECT " + COLUMNAS + " "
                    + "FROM registro_carbono r "
-                   + "JOIN equipo e ON e.codigo = r.codigo_equipo "
+                   + "JOIN equipo e ON e.id_equipo = r.id_equipo "
                    + "JOIN area a ON a.id_area = e.id_area "
                    + "ORDER BY r.fecha_registro DESC, r.id_registro DESC";
         try (PreparedStatement ps = conexion.prepareStatement(sql);
@@ -93,7 +94,7 @@ public class CarbonoDAO {
     private RegistroCarbono consultarPorId(long idRegistro) throws SQLException {
         String sql = "SELECT " + COLUMNAS + " "
                    + "FROM registro_carbono r "
-                   + "JOIN equipo e ON e.codigo = r.codigo_equipo "
+                   + "JOIN equipo e ON e.id_equipo = r.id_equipo "
                    + "JOIN area a ON a.id_area = e.id_area "
                    + "WHERE r.id_registro = ?";
         try (PreparedStatement ps = conexion.prepareStatement(sql)) {

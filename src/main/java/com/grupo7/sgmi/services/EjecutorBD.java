@@ -54,10 +54,22 @@ public class EjecutorBD {
         }
     }
 
-    /** Abre una conexion para consultas de solo lectura. */
+    /** Abre una transaccion de lectura consistente para consultas de una o varias filas. */
     public <T> T enLectura(TrabajoBD<T> trabajo) {
         try (Connection conexion = dataSource.getConnection()) {
-            return trabajo.ejecutar(conexion);
+            conexion.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+            conexion.setAutoCommit(false);
+            try {
+                T resultado = trabajo.ejecutar(conexion);
+                conexion.commit();
+                return resultado;
+            } catch (SQLException e) {
+                revertir(conexion);
+                throw traducir(e);
+            } catch (RuntimeException e) {
+                revertir(conexion);
+                throw e;
+            }
         } catch (SQLException e) {
             throw traducir(e);
         }

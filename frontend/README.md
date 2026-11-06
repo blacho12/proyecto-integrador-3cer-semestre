@@ -85,7 +85,7 @@ de destruir la vista anterior y cerrar modales al navegar.
 | Panel principal | `#/dashboard` | Indicadores, próxima orden y estado de cola/AVL/pila |
 | Órdenes de mantenimiento | `#/ordenes` | Listar, filtrar, crear, modificar, cerrar, cancelar y ver detalle |
 | Cola de prioridad | `#/cola` | Ver tope y recorrido, atender la más prioritaria y cancelar |
-| Equipos e índice AVL | `#/equipos` | Listar, buscar, crear, editar nombre/área y eliminar sin cascada |
+| Equipos e índice AVL | `#/equipos` | Listar activos, buscar, crear/reactivar, editar y dar de baja con deshacer |
 | Gestión de áreas | `#/areas` | CRUD con conteo de equipos asociados |
 | Historial de acciones | `#/historial` | Ver la pila LIFO y deshacer la última acción |
 | Indicadores y estadísticas | `#/estadisticas` | Tarjetas y distribuciones reales de la API |
@@ -103,7 +103,7 @@ DELETE /api/areas/{idArea}
 GET    /api/equipos
 POST   /api/equipos
 PUT    /api/equipos/{codigo}
-DELETE /api/equipos/{codigo}?eliminarOrdenes=false
+DELETE /api/equipos/{codigo}
 
 GET    /api/ordenes
 GET    /api/ordenes/cola
@@ -125,19 +125,23 @@ PUT    /api/carbono/configuracion
 PUT    /api/carbono/equipos/{codigo}/parametros
 ```
 
-El resumen agrega el historial persistido. Para usar carbono, aplique primero
-`src/main/resources/esquema_carbono.sql` a la misma base PostgreSQL del backend. La API
+El resumen agrega el historial persistido. Para una base antigua, aplique primero
+`src/main/resources/migracion_identidad_equipo_acciones.sql`; para una base nueva use
+`esquema.sql`. Para usar carbono, aplique `src/main/resources/esquema_carbono.sql` a la
+misma base PostgreSQL del backend. La API
 calcula consumo adicional como `consumo normal × horas en mal estado × porcentaje extra /
 100` y emisiones como `consumo adicional × factor de emisión`; conserva el factor usado
 en cada registro y rechaza valores negativos o porcentajes mayores que 100.
 
 ## 7. Decisiones de negocio conservadas
 
-- **Sin borrado en cascada:** al eliminar un equipo se envía `eliminarOrdenes=false`. Si
-  tiene órdenes, la API responde `409` y el frontend muestra el motivo.
-- **Código de equipo inmutable:** la API `PUT /api/equipos/{codigo}` solo permite cambiar
-  nombre y área; el código es la clave primaria. La interfaz lo muestra como campo de solo
-  lectura al editar.
+- **Baja lógica de equipo:** el código se conserva único y el registro se marca inactivo.
+  Solo las órdenes `PENDIENTE` se eliminan; las cerradas y canceladas permanecen en el
+  historial. La acción compuesta puede deshacerse, incluso después de reiniciar el backend.
+- **Identidad del equipo:** `id_equipo` es la clave primaria; el código único e inmutable
+  sigue identificando al equipo en la API, el historial y el índice AVL. `POST` con un
+  código inactivo reactiva el mismo registro; los inactivos no aparecen como opciones de
+  nuevas órdenes.
 - **Áreas con equipos:** no se eliminan desde la interfaz ni desde el backend.
 - **Criticidad:** se calcula en el cliente solo para la vista previa del formulario y se
   muestra la que devuelve el backend. Fórmula:
@@ -156,8 +160,8 @@ en cada registro y rechaza valores negativos o porcentajes mayores que 100.
 - **Árbol AVL:** la API devuelve el recorrido inorden y la altura, no la forma interna del
   árbol. La vista muestra el índice ordenado y las métricas reales, sin dibujar nodos
   inventados.
-- **Pila de acciones:** vive en la memoria del proceso del backend y se pierde al
-  reiniciar el servicio, igual que en la versión Swing.
+- **Pila de acciones:** se persiste en PostgreSQL. El AVL y la cola se reconstruyen desde
+  los equipos activos y las órdenes pendientes.
 
 ## 9. Verificación sugerida
 

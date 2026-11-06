@@ -260,8 +260,8 @@ export async function mount(root) {
                                value="${escapeHtml(equipo?.codigo || '')}" ${editing ? 'readonly' : ''}>
                         <div class="form-text">
                             ${editing
-                                ? 'El código es la clave primaria y la API no permite cambiarlo.'
-                                : 'Máximo 30 caracteres. Se normaliza a mayúsculas.'}
+                                ? 'El código identifica al equipo y la API no permite cambiarlo.'
+                                : 'Máximo 30 caracteres. Si corresponde a un equipo inactivo, se reactivará el registro existente.'}
                         </div>
                     </div>
                     <div class="mb-3">
@@ -282,7 +282,7 @@ export async function mount(root) {
             footer: `
                 <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
                 <button type="submit" class="btn btn-primary" form="equipment-form" id="equipment-submit">
-                    <i class="bi bi-floppy" aria-hidden="true"></i> ${editing ? 'Guardar cambios' : 'Crear equipo'}
+                    <i class="bi bi-floppy" aria-hidden="true"></i> ${editing ? 'Guardar cambios' : 'Crear o reactivar'}
                 </button>`,
         });
 
@@ -316,7 +316,7 @@ export async function mount(root) {
                     showToast(`Equipo ${equipo.codigo} actualizado.`);
                 } else {
                     await api.equipos.crear({ codigo, nombre, idArea });
-                    showToast(`Equipo ${codigo} creado e indexado.`);
+                    showToast(`Equipo ${codigo} activo e indexado.`);
                 }
                 modal.hide();
                 notifyDataChanged();
@@ -330,23 +330,20 @@ export async function mount(root) {
 
     async function removeEquipment(equipo) {
         const confirmed = await confirmDialog({
-            title: 'Eliminar equipo',
-            message: `¿Eliminar definitivamente el equipo ${equipo.codigo} (${equipo.nombre})?`,
-            details: 'Solo se elimina si no tiene órdenes asociadas. No se borra el historial en cascada.',
-            confirmText: 'Eliminar equipo',
+            title: 'Dar de baja equipo',
+            message: `¿Dar de baja ${equipo.codigo} (${equipo.nombre})?`,
+            details: 'Se conservará el registro. Sus órdenes pendientes se eliminarán y podrán restaurarse desde la acción de deshacer; las cerradas y canceladas permanecen en el historial.',
+            confirmText: 'Dar de baja',
         });
         if (!confirmed) return;
 
         try {
             await api.equipos.eliminar(equipo.codigo);
-            showToast(`Equipo ${equipo.codigo} eliminado.`);
+            showToast(`Equipo ${equipo.codigo} dado de baja. Puede deshacerlo desde el historial.`);
             notifyDataChanged();
             await load();
         } catch (error) {
-            const hint = error.status === 409
-                ? ' El equipo tiene órdenes asociadas; primero gestione esas órdenes.'
-                : '';
-            showToast(`${error.message}${hint}`, 'danger');
+            showToast(error.message, 'danger');
         }
     }
 

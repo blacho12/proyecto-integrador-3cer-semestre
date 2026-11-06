@@ -14,6 +14,11 @@ public class ColaPrioridad {
     public boolean estaVacia() { return tamano == 0; }
     public int tamano() { return tamano; }
 
+    public void limpiar() {
+        datos = new OrdenMantenimiento[8];
+        tamano = 0;
+    }
+
     /** Inserta una orden. Complejidad O(log n). */
     public void encolar(OrdenMantenimiento o) {
         if (o == null) throw new IllegalArgumentException("La orden no puede ser nula");

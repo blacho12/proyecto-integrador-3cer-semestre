@@ -36,6 +36,7 @@ ON CONFLICT (id_configuracion) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS registro_carbono (
     id_registro BIGINT GENERATED ALWAYS AS IDENTITY,
+    id_equipo BIGINT NOT NULL,
     codigo_equipo VARCHAR(30) NOT NULL,
     horas_mal_estado NUMERIC(10,2) NOT NULL,
     consumo_adicional_kwh NUMERIC(14,4) NOT NULL,
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS registro_carbono (
     fecha_registro TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT pk_registro_carbono PRIMARY KEY (id_registro),
     CONSTRAINT fk_registro_carbono_equipo
-        FOREIGN KEY (codigo_equipo) REFERENCES equipo(codigo)
+        FOREIGN KEY (id_equipo, codigo_equipo) REFERENCES equipo(id_equipo, codigo)
         ON UPDATE CASCADE ON DELETE RESTRICT,
     CONSTRAINT ck_registro_carbono_horas CHECK (horas_mal_estado >= 0),
     CONSTRAINT ck_registro_carbono_consumo CHECK (consumo_adicional_kwh >= 0),
@@ -53,4 +54,5 @@ CREATE TABLE IF NOT EXISTS registro_carbono (
 );
 
 CREATE INDEX IF NOT EXISTS idx_registro_carbono_equipo ON registro_carbono(codigo_equipo);
+CREATE INDEX IF NOT EXISTS idx_registro_carbono_id_equipo ON registro_carbono(id_equipo);
 CREATE INDEX IF NOT EXISTS idx_registro_carbono_fecha ON registro_carbono(fecha_registro);
