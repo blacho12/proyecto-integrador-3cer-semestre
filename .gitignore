@@ -10,3 +10,5 @@ target/
 
 # Archivos temporales de Java
 *.class
+
+.sh
