@@ -1,6 +1,6 @@
-# Variables de entorno
+# Variables de entorno (nunca versionar credenciales)
 .env
-.env.*
+src/main/.env
 
 # Archivos generados por Maven
 target/

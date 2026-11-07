@@ -6,21 +6,22 @@ import java.sql.SQLException;
 
 /**
  * Punto unico de acceso a PostgreSQL por JDBC.
- * Las credenciales se toman de las variables de entorno DB_URL, DB_USER y DB_PASSWORD;
- * nunca se escriben dentro del codigo.
+ * Las credenciales se toman de las variables de entorno DB_URL, DB_USER y DB_PASSWORD
+ * o, si no estan definidas, del archivo .env del proyecto; nunca se escriben dentro del codigo.
  */
 public final class ConexionBD {
     private ConexionBD() { /* utilitaria: no se instancia */ }
 
-    /** Crea una conexion nueva a PostgreSQL a partir de las variables de entorno. */
+    /** Crea una conexion nueva a PostgreSQL a partir de las variables de entorno o del .env. */
     public static Connection getConnection() throws SQLException {
-        String url = System.getenv("DB_URL");
-        String usuario = System.getenv("DB_USER");
-        String password = System.getenv("DB_PASSWORD");
+        String url = Configuracion.obtener("DB_URL");
+        String usuario = Configuracion.obtener("DB_USER");
+        String password = Configuracion.obtener("DB_PASSWORD");
 
         if (url == null || usuario == null || password == null) {
             throw new SQLException(
                     "Faltan las variables de entorno DB_URL, DB_USER y DB_PASSWORD. "
+                    + mensajeArchivoEnv()
                     + "Ejemplo: DB_URL=jdbc:postgresql://localhost:5432/mantenimiento "
                     + "DB_USER=postgres DB_PASSWORD=****");
         }
@@ -32,6 +33,16 @@ public final class ConexionBD {
                     "No se pudo conectar a PostgreSQL con DB_URL=" + url
                     + " y DB_USER=" + usuario + ": " + mensajeAmigable(e), e);
         }
+    }
+
+    /** Explica donde se esperaba el archivo .env cuando faltan credenciales. */
+    private static String mensajeArchivoEnv() {
+        java.nio.file.Path ruta = Configuracion.rutaArchivo();
+        if (ruta != null) {
+            return "El archivo " + ruta + " no define esas claves. ";
+        }
+        return "No se encontro el archivo .env en el proyecto. "
+                + "Copie .env.ejemplo como .env y complete las credenciales de PostgreSQL. ";
     }
 
     /** Traduce los SQLState mas frecuentes a un mensaje comprensible para el usuario. */
